@@ -31,6 +31,7 @@ jobs:
           APP_PATH=$(west list manifest --format "{posixpath}")/app
           echo "Building ZMK app from $APP_PATH"
           west build -s "$APP_PATH" -b nice_nano_v2 -d build/test -- \
+            -DBOARD_ROOT="$APP_PATH" \
             -DZMK_EXTRA_MODULES="$GITHUB_WORKSPACE/modules/zmk-driver-maxtouch" \
             -DCONFIG_INPUT=y \
             -DCONFIG_ZMK_POINTING=y \
