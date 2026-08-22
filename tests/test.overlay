@@ -1,0 +1,30 @@
+/*
+ * Minimal test overlay to validate Devicetree binding and driver compilation
+ */
+
+/ {
+    chosen {
+        zmk,kscan = &dummy_kscan;
+    };
+
+    dummy_kscan: kscan {
+        compatible = "zmk,kscan-mock";
+        columns = <1>;
+        rows = <1>;
+        events = <0>;
+    };
+};
+
+&i2c0 {
+    status = "okay";
+
+    trackpad: maxtouch@4a {
+        compatible = "microchip,maxtouch";
+        reg = <0x4a>;
+        chg-gpios = <&gpio0 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
+        sensor-width = <156>;
+        sensor-height = <91>;
+        swap-xy;
+        repeat-each-cycle;
+    };
+};

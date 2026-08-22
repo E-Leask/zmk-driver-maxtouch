@@ -1,0 +1,36 @@
+name: Build Validation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: zmkfirmware/zmk-build-arm:stable
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@v4
+        with:
+          path: modules/zmk-driver-maxtouch
+
+      - name: Initialize West workspace
+        run: |
+          west init -m https://github.com/zmkfirmware/zmk.git --mr main zmk-workspace
+          cd zmk-workspace
+          west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: Compile test build
+        run: |
+          cd zmk-workspace
+          west build -s zmk/app -b nice_nano_v2 -d build/test -- \
+            -DZMK_EXTRA_MODULES="$GITHUB_WORKSPACE/modules/zmk-driver-maxtouch" \
+            -DCONFIG_INPUT=y \
+            -DCONFIG_ZMK_POINTING=y \
+            -DCONFIG_INPUT_MICROCHIP_MAXTOUCH=y \
+            -DDTC_OVERLAY_FILE="$GITHUB_WORKSPACE/modules/zmk-driver-maxtouch/tests/test.overlay"
