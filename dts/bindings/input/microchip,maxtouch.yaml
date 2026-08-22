@@ -1,0 +1,110 @@
+# Copyright (c) 2024 The ZMK Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Input driver for Microchip maXTouch devices
+
+include: ["i2c-device.yaml"]
+
+compatible: "microchip,maxtouch"
+
+properties:
+  chg-gpios:
+    type: phandle-array
+    description: CHG interrupt pin for the device
+    required: true
+
+  max-touch-points:
+    type: int
+    default: 5
+    description: Maximum number of simultaneous touch points to track (up to 10)
+
+  repeat-each-cycle:
+    type: boolean
+    description: Repeat events for any active touches each scan, even if no changes detected.
+
+  swap-xy:
+    type: boolean
+    description: Swap X and Y coordinates
+
+  invert-x:
+    type: boolean
+    description: Invert X coordinates
+
+  invert-y:
+    type: boolean
+    description: Invert Y coordinates
+
+  idle-acq-time-ms:
+    type: int
+    default: 32
+    description: Acquisition interval in idle mode in milliseconds
+
+  active-acq-time-ms:
+    type: int
+    default: 10
+    description: Acquisition interval in active mode in milliseconds
+
+  active-to-idle-timeout-ms:
+    type: int
+    default: 50
+    description: Inactivity duration before switching from active to idle mode
+
+  sensor-width:
+    type: int
+    description: The physical width of the sensor in millimeters
+    required: true
+
+  sensor-height:
+    type: int
+    description: The physical height of the sensor in millimeters
+    required: true
+
+  touch-threshold:
+    type: int
+    default: 18
+    description: Touches must exceed this threshold before generating an event.
+
+  touch-hysteresis:
+    type: int
+    default: 8
+    description: Hysteresis for touches dropping out of detection.
+
+  internal-touch-threshold:
+    type: int
+    default: 10
+    description: Secondary touch threshold used internally by the sensor.
+
+  internal-touch-hysteresis:
+    type: int
+    default: 4
+    description: Secondary hysteresis used internally by the sensor.
+
+  gain:
+    type: int
+    default: 4
+    description: Transmit power gain for mutual capacitance measurements.
+
+  charge-time:
+    type: int
+    default: 10
+    description: Charge time for sensor lines.
+
+  allowed-measurement-types:
+    type: int
+    default: 3
+    description: Measurement types mask (1 = mutual capacitance only).
+
+  active-syncs-per-x:
+    type: int
+    default: 20
+    description: Active mode syncs / ADC samples per X line.
+
+  idle-syncs-per-x:
+    type: int
+    default: 20
+    description: Idle mode syncs / ADC samples per X line.
+
+  retransmission-compensation-disable:
+    type: boolean
+    description: Disable retransmission compensation.
