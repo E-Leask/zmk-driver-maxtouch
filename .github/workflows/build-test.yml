@@ -26,9 +26,12 @@ jobs:
           west zephyr-export
 
       - name: Compile test build
+        working-directory: zmk-workspace
         run: |
-          cd zmk-workspace
-          west build -s zmk/app -b nice_nano_v2 -d build/test -- \
+          pwd
+          ls -la
+          west list
+          west build -s $(west topdir)/zmk/app -b nice_nano_v2 -d build/test -- \
             -DZMK_EXTRA_MODULES="$GITHUB_WORKSPACE/modules/zmk-driver-maxtouch" \
             -DCONFIG_INPUT=y \
             -DCONFIG_ZMK_POINTING=y \
