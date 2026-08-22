@@ -2,6 +2,9 @@
  * Minimal test overlay to validate Devicetree binding and driver compilation
  */
 
+#include <dt-bindings/zmk/keys.h>
+#include <behaviors.dtsi>
+
 / {
     chosen {
         zmk,kscan = &dummy_kscan;
@@ -12,6 +15,13 @@
         columns = <1>;
         rows = <1>;
         events = <0>;
+    };
+
+    keymap {
+        compatible = "zmk,keymap";
+        default_layer {
+            bindings = <&none>;
+        };
     };
 };
 
