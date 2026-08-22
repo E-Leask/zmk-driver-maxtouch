@@ -20,7 +20,7 @@ jobs:
 
       - name: Initialize West workspace
         run: |
-          west init -m https://github.com/zmkfirmware/zmk.git --mr main zmk-workspace
+          west init -m https://github.com/zmkfirmware/zmk.git --mr main --mf app/west.yml zmk-workspace
           cd zmk-workspace
           west update --narrow -o=--depth=1
           west zephyr-export
