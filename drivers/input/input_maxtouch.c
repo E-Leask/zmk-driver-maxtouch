@@ -46,7 +46,6 @@ static inline bool is_t100_report(const struct device *dev, int report_id) {
 }
 
 static void mxt_report_data(const struct device *dev) {
-    const struct mxt_config *config = dev->config;
     struct mxt_data *data = dev->data;
     int ret;
 
@@ -401,13 +400,16 @@ static int mxt_load_config(const struct device *dev,
         t100_conf.tchdidown = 2; // MXT_DOWN touch detection integration - the number of cycles before the sensor decides an MXT_DOWN event has occurred
         t100_conf.nexttchdi = 2;
         t100_conf.calcfg = 0;
+        uint16_t logical_x = config->sensor_width * 10;
+        uint16_t logical_y = config->sensor_height * 10;
+
         if (config->swap_xy) {
-            t100_conf.xrange = sys_cpu_to_le16(CONFIG_ZMK_TRACKPAD_LOGICAL_Y-1);
-            t100_conf.yrange = sys_cpu_to_le16(CONFIG_ZMK_TRACKPAD_LOGICAL_X-1);
+            t100_conf.xrange = sys_cpu_to_le16(logical_y - 1);
+            t100_conf.yrange = sys_cpu_to_le16(logical_x - 1);
         }
         else {
-            t100_conf.xrange = sys_cpu_to_le16(CONFIG_ZMK_TRACKPAD_LOGICAL_X-1);
-            t100_conf.yrange = sys_cpu_to_le16(CONFIG_ZMK_TRACKPAD_LOGICAL_Y-1);
+            t100_conf.xrange = sys_cpu_to_le16(logical_x - 1);
+            t100_conf.yrange = sys_cpu_to_le16(logical_y - 1);
         }
         ret = mxt_seq_write(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf,
                             sizeof(t100_conf));
