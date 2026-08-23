@@ -50,6 +50,7 @@ static void mxt_report_data(const struct device *dev) {
     int ret;
 
     if (!data->t44_message_count_address) {
+        LOG_WRN("No T44 object found on device, cannot read messages via T44!");
         return;
     }
 
@@ -119,6 +120,7 @@ static void mxt_work_cb(struct k_work *work) {
 
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
     struct mxt_data *data = CONTAINER_OF(cb, struct mxt_data, gpio_cb);
+    LOG_DBG("CHG interrupt triggered!");
     k_work_submit(&data->work);
 }
 
@@ -152,6 +154,8 @@ static int mxt_load_object_table(const struct device *dev, struct mxt_informatio
         }
 
         uint16_t addr = sys_le16_to_cpu(obj_table.position);
+        LOG_DBG("Obj %d: Type T%d at 0x%04x (size %d, reports %d)", i, obj_table.type, addr,
+                obj_table.size_minus_one + 1, obj_table.report_ids_per_instance);
 
         switch (obj_table.type) {
         case 2:
