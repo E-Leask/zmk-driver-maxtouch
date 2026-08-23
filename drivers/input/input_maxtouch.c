@@ -49,33 +49,31 @@ static void mxt_report_data(const struct device *dev) {
     struct mxt_data *data = dev->data;
     int ret;
 
-    if (!data->t44_message_count_address) {
-        LOG_WRN("No T44 object found on device, cannot read messages via T44!");
+    if (!data->t5_message_processor_address) {
+        LOG_WRN("No T5 message processor object found!");
         return;
-    }
-
-    uint8_t msg_count;
-    ret = mxt_seq_read(dev, data->t44_message_count_address, &msg_count, 1);
-
-    if (ret < 0) {
-        LOG_ERR("Failed to read message count: %d", ret);
-        return;
-    }
-
-    if (msg_count > 0) {
-        LOG_DBG("Processing %d messages from T44/T5", msg_count);
     }
 
     uint16_t pending_fingers = 0;
     bool last_touch_status = false;
-    for (int i = 0; i < msg_count; i++) {
+
+    // Read messages from T5 until FIFO is empty (report_id == 0xFF or 0x00)
+    for (int i = 0; i < 20; i++) {
         struct mxt_message msg;
 
         ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, sizeof(msg));
         if (ret < 0) {
-            LOG_ERR("Failed to read message: %d", ret);
-            return;
+            LOG_ERR("Failed to read message from T5: %d", ret);
+            break;
         }
+
+        // 0xFF indicates no more messages in T5 FIFO
+        if (msg.report_id == 0xFF || msg.report_id == 0x00) {
+            break;
+        }
+
+        LOG_DBG("Read T5 message: report_id=%d, data=[%02x %02x %02x %02x %02x %02x]",
+                msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
 
         if (is_t100_report(dev, msg.report_id)) {
             uint8_t finger_idx = msg.report_id - data->t100_first_report_id - 2;
@@ -104,7 +102,6 @@ static void mxt_report_data(const struct device *dev) {
                 input_report_key(dev, INPUT_BTN_TOUCH, last_touch_status, false, K_FOREVER);
                 break;
             default:
-                // All other events are ignored
                 break;
             }
         } else {
