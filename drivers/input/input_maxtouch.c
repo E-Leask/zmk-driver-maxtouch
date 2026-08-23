@@ -121,7 +121,12 @@ static void mxt_report_data(const struct device *dev) {
 
 static void mxt_work_cb(struct k_work *work) {
     struct mxt_data *data = CONTAINER_OF(work, struct mxt_data, work);
-    mxt_report_data(data->dev);
+    const struct mxt_config *config = data->dev->config;
+
+    int retries = 50;
+    do {
+        mxt_report_data(data->dev);
+    } while (gpio_pin_get_dt(&config->chg) == 1 && --retries > 0);
 }
 
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
@@ -487,8 +492,14 @@ static int mxt_init(const struct device *dev) {
         return -EIO;
     }
 
-    // Load any existing messages to clear them, ensure our edge interrupt will fire
-    mxt_report_data(dev);
+    // Give calibration 100ms to complete, then drain all messages until CHG is released
+    k_msleep(100);
+    int drain_retries = 50;
+    while (gpio_pin_get_dt(&config->chg) == 1 && --drain_retries > 0) {
+        mxt_report_data(dev);
+    }
+
+    LOG_INF("CHG pin logical level after calibration & drain: %d", gpio_pin_get_dt(&config->chg));
 
     return 0;
 }
