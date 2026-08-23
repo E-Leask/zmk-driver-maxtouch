@@ -62,6 +62,10 @@ static void mxt_report_data(const struct device *dev) {
         return;
     }
 
+    if (msg_count > 0) {
+        LOG_DBG("Processing %d messages from T44/T5", msg_count);
+    }
+
     uint16_t pending_fingers = 0;
     bool last_touch_status = false;
     for (int i = 0; i < msg_count; i++) {
@@ -80,6 +84,8 @@ static void mxt_report_data(const struct device *dev) {
             enum t100_touch_event ev = msg.data[0] & 0xF;
             uint16_t x_pos = msg.data[1] + (msg.data[2] << 8);
             uint16_t y_pos = msg.data[3] + (msg.data[4] << 8);
+
+            LOG_INF("Touch event: ev=%d, finger=%d, X=%d, Y=%d", ev, finger_idx, x_pos, y_pos);
 
             switch (ev) {
             case DOWN:
@@ -423,6 +429,16 @@ static int mxt_load_config(const struct device *dev,
         }
     }
 
+    if (data->t6_command_processor_address) {
+        uint8_t cal = 1;
+        ret = mxt_seq_write(dev, data->t6_command_processor_address + 2, &cal, 1);
+        if (ret < 0) {
+            LOG_ERR("Failed to send T6 calibrate command: %d", ret);
+        } else {
+            LOG_INF("Sent T6 calibrate command successfully");
+        }
+    }
+
     return 0;
 }
 
@@ -461,6 +477,9 @@ static int mxt_init(const struct device *dev) {
         LOG_ERR("Failed to configure interrupt for CHG pin %d", ret);
         return -EIO;
     }
+
+    LOG_INF("CHG pin logical level at init: %d (port=%s, pin=%d)",
+            gpio_pin_get_dt(&config->chg), config->chg.port->name, config->chg.pin);
 
     ret = mxt_load_config(dev, &info);
     if (ret < 0) {
