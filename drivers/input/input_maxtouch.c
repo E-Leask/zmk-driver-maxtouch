@@ -233,34 +233,31 @@ static int mxt_load_config(const struct device *dev,
 
     if (data->t7_powerconfig_address) {
         struct mxt_gen_powerconfig_t7 t7_conf = {0};
-        t7_conf.idleacqint = config->idle_acq_time;
-        t7_conf.actacqint = config->active_acq_time;
-        t7_conf.actv2idleto = config->active_to_idle_timeout;
-        t7_conf.cfg = MXT_T7_CFG_ACTVPIPEEN | MXT_T7_CFG_IDLEPIPEEN; // Enable pipelining in both active and idle mode
+        ret = mxt_seq_read(dev, data->t7_powerconfig_address, &t7_conf, sizeof(t7_conf));
+        if (ret == 0) {
+            t7_conf.idleacqint = config->idle_acq_time;
+            t7_conf.actacqint = config->active_acq_time;
+            t7_conf.actv2idleto = config->active_to_idle_timeout;
+            t7_conf.cfg |= (MXT_T7_CFG_ACTVPIPEEN | MXT_T7_CFG_IDLEPIPEEN | MXT_T7_CFG_INITACTV);
 
-        ret = mxt_seq_write(dev, data->t7_powerconfig_address, &t7_conf, sizeof(t7_conf));
-        if (ret < 0) {
-            LOG_ERR("Failed to set T7 config: %d", ret);
-            return ret;
+            ret = mxt_seq_write(dev, data->t7_powerconfig_address, &t7_conf, sizeof(t7_conf));
+            if (ret < 0) {
+                LOG_ERR("Failed to set T7 config: %d", ret);
+                return ret;
+            }
         }
     }
 
     if (data->t8_acquisitionconfig_address) {
         struct mxt_gen_acquisitionconfig_t8 t8_conf = {0};
-        t8_conf.chrgtime = config->charge_time;
-        t8_conf.tchautocal = 50;
-        t8_conf.atchcalst = 0;
-
-        // Antitouch detection - reject palms etc..
-        t8_conf.atchcalsthr = 50;
-        t8_conf.atchfrccalthr = 50;
-        t8_conf.atchfrccalratio = 25;
-        t8_conf.measallow = config->allowed_measurement_types;
-
-        ret = mxt_seq_write(dev, data->t8_acquisitionconfig_address, &t8_conf, sizeof(t8_conf));
-        if (ret < 0) {
-            LOG_ERR("Failed to set T8 config: %d", ret);
-            return ret;
+        ret = mxt_seq_read(dev, data->t8_acquisitionconfig_address, &t8_conf, sizeof(t8_conf));
+        if (ret == 0) {
+            t8_conf.chrgtime = config->charge_time;
+            ret = mxt_seq_write(dev, data->t8_acquisitionconfig_address, &t8_conf, sizeof(t8_conf));
+            if (ret < 0) {
+                LOG_ERR("Failed to set T8 config: %d", ret);
+                return ret;
+            }
         }
     }
 
@@ -289,54 +286,22 @@ static int mxt_load_config(const struct device *dev,
     }
 #endif
 
-    // Mutural Capacitive Touch Engine (CTE) configuration, currently we use all the default values but it feels like some of this stuff might be important.
+    // Preserve factory Mutual Capacitive Touch Engine (CTE) configuration (drive voltages, syncs, timings)
     if (data->t46_cte_config_address) {
         struct mxt_spt_cteconfig_t46 t46_conf = {};
-        t46_conf.idlesyncsperx = config->idle_syncs_per_x;      // ADC samples per X.
-        t46_conf.activesyncsperx = config->active_syncs_per_x;  // ADC samples per X.
-        t46_conf.inrushcfg = 0;                                 // Set Y-line inrush limit resistors.
-
-
-        ret = mxt_seq_write(dev, data->t46_cte_config_address, &t46_conf, sizeof(t46_conf));
-        if (ret < 0) {
-            LOG_ERR("Failed to set T46 config: %d", ret);
-            return ret;
+        ret = mxt_seq_read(dev, data->t46_cte_config_address, &t46_conf, sizeof(t46_conf));
+        if (ret == 0) {
+            LOG_INF("Factory T46 CTE: xvoltage=%d, syncdelay=%d, activesyncsperx=%d",
+                    t46_conf.xvoltage, sys_le16_to_cpu(t46_conf.syncdelay), t46_conf.activesyncsperx);
         }
     }
-
-#ifdef MXT_ENABLE_STYLUS
-    if (data->t47_proci_stylus_address) {
-        struct mxt_proci_stylus_t47 t47_conf = {};
-        t47_conf.cfg = MXT_T47_CFG_SUPSTY;  // Supress stylus detections when normal touches are present.
-        t47_conf.contmax = 80;              // The maximum contact diameter of the stylus in 0.1mm increments
-        t47_conf.maxtcharea = 100;          // Maximum touch area a contact can have an still be considered a stylus
-        t47_conf.stability = 30;            // Higher values prevent the stylus from dropping out when it gets small
-        t47_conf.confthr = 6;               // Higher values increase the chances of correctly detecting as stylus, but introduce a delay
-        t47_conf.amplthr = 60;              // Any touches smaller than this are classified as stylus touches
-        t47_conf.supstyto = 5;              // Continue to suppress stylus touches until supstyto x 200ms after the last touch is removed.
-        t47_conf.hoversup = 200;            // 255 Disables hover supression
-        t47_conf.maxnumsty = 1;             // Only report a single stylus
-        t47_conf.ctrl = 1;                  // Enable stylus detection
-
-        ret = mxt_seq_write(dev, data->t47_proci_stylus_address, &t47_conf, sizeof(t47_conf));
-        if (ret < 0) {
-            LOG_ERR("Failed to set T46 config: %d", ret);
-            return ret;
-        }
-    }
-#endif
 
     if (data->t80_proci_retransmissioncompensation_address) {
         struct mxt_proci_retransmissioncompensation_t80 t80_conf = {};
-        t80_conf.ctrl = config->retransmission_compensation_disable == false;
-        t80_conf.compgain = 5;
-        t80_conf.targetdelta = 125;
-        t80_conf.compthr = 60;
-
-        ret = mxt_seq_write(dev, data->t80_proci_retransmissioncompensation_address, &t80_conf, sizeof(t80_conf));
-        if (ret < 0) {
-            LOG_ERR("Failed to set T80 config: %d", ret);
-            return ret;
+        ret = mxt_seq_read(dev, data->t80_proci_retransmissioncompensation_address, &t80_conf, sizeof(t80_conf));
+        if (ret == 0) {
+            t80_conf.ctrl = (config->retransmission_compensation_disable == false);
+            ret = mxt_seq_write(dev, data->t80_proci_retransmissioncompensation_address, &t80_conf, sizeof(t80_conf));
         }
     }
 
@@ -350,79 +315,50 @@ static int mxt_load_config(const struct device *dev,
             return ret;
         }
 
-        t100_conf.ctrl =
-            MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_SCANEN;  // Enable the t100 object, and enable
-                                                                                // message reporting for the t100 object.1`
-                                                                                // and enable close scanning mode.
-        uint8_t cfg1 = 0;
+        LOG_INF("Factory T100: ctrl=0x%02x, gain=%d, tchthr=%d, xrange=%d, yrange=%d",
+                t100_conf.ctrl, t100_conf.gain, t100_conf.tchthr,
+                sys_le16_to_cpu(t100_conf.xrange), sys_le16_to_cpu(t100_conf.yrange));
 
+        t100_conf.ctrl =
+            MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_SCANEN;
+
+        uint8_t cfg1 = 0;
         if (config->repeat_each_cycle) {
             cfg1 |= MXT_T100_CFG_RPTEACHCYCLE;
         }
-
         if (config->swap_xy) {
             cfg1 |= MXT_T100_CFG_SWITCHXY;
         }
-
         if (config->invert_x) {
             cfg1 |= MXT_T100_CFG_INVERTX;
         }
-
         if (config->invert_y) {
             cfg1 |= MXT_T100_CFG_INVERTY;
         }
+        t100_conf.cfg1 = cfg1;
+        t100_conf.scraux = 0x7;
+        t100_conf.numtch = config->max_touch_points;
+        t100_conf.xsize = information->matrix_x_size;
+        t100_conf.ysize = information->matrix_y_size;
 
-        t100_conf.cfg1 = cfg1; // Could also handle rotation, and axis inversion in hardware here
+        if (config->sensor_width > 0 && information->matrix_x_size > 0) {
+            t100_conf.xpitch = (config->sensor_width * 10 / information->matrix_x_size);
+        }
+        if (config->sensor_height > 0 && information->matrix_y_size > 0) {
+            t100_conf.ypitch = (config->sensor_height * 10 / information->matrix_y_size);
+        }
 
-        t100_conf.scraux = 0x7;                       // AUX data: Report the number of touch events, touch area, anti touch area
-        t100_conf.numtch = config->max_touch_points;  // The number of touch reports
-                                                      // we want to receive (upto 10)
-        t100_conf.xsize = information->matrix_x_size; // Make configurable as this depends on the
-                                                      // sensor design.
-        t100_conf.ysize = information->matrix_y_size; // Make configurable as this depends on the
-                                                      // sensor design.
-                                                      //
-        t100_conf.xpitch = (config->sensor_width * 10 / information->matrix_x_size); // Pitch between X-Lines (0.1mm * XPitch).
-        t100_conf.ypitch = (config->sensor_height * 10 / information->matrix_y_size); // Pitch between Y-Lines (0.1mm * YPitch).
-        t100_conf.xedgecfg = 9;
-        t100_conf.xedgedist = 10;
-        t100_conf.yedgecfg = 9;
-        t100_conf.yedgedist = 10;
-        t100_conf.gain = config->gain;  // Single transmit gain for mutual capacitance measurements
-        t100_conf.dxgain = 0;           // Dual transmit gain for mutual capacitance
-                                        // measurements (255 = auto calibrate)
-        t100_conf.tchthr = config->touch_threshold;
-        t100_conf.tchhyst = config->touch_hysteresis;
-        t100_conf.intthr = config->internal_touch_threshold;
-        t100_conf.intthryst = config->internal_touch_hysteresis;
-        t100_conf.mrgthr = 5;           // Merge threshold
-        t100_conf.mrghyst = 10;         // Merge threshold hysteresis
-        t100_conf.mrgthradjstr = 20;
-        t100_conf.movsmooth = 0;        // The amount of smoothing applied to movements,
-                                        // this tails off at higher speeds
-        t100_conf.movfilter = 0;        // The lower 4 bits are the speed response value, higher
-                                        // values reduce lag, but also smoothing
-
-        // These two fields implement a simple filter for reducing jitter, but large
-        // values cause the pointer to stick in place before moving.
-        t100_conf.movhysti = 10; // Initial movement hysteresis
-        t100_conf.movhystn = 4; // Next movement hysteresis
-
-        t100_conf.tchdiup = 4; // MXT_UP touch detection integration - the number of cycles before the sensor decides an MXT_UP event has occurred
-        t100_conf.tchdidown = 2; // MXT_DOWN touch detection integration - the number of cycles before the sensor decides an MXT_DOWN event has occurred
-        t100_conf.nexttchdi = 2;
-        t100_conf.calcfg = 0;
         uint16_t logical_x = config->sensor_width * 10;
         uint16_t logical_y = config->sensor_height * 10;
 
         if (config->swap_xy) {
             t100_conf.xrange = sys_cpu_to_le16(logical_y - 1);
             t100_conf.yrange = sys_cpu_to_le16(logical_x - 1);
-        }
-        else {
+        } else {
             t100_conf.xrange = sys_cpu_to_le16(logical_x - 1);
             t100_conf.yrange = sys_cpu_to_le16(logical_y - 1);
         }
+
         ret = mxt_seq_write(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf,
                             sizeof(t100_conf));
         if (ret < 0) {
