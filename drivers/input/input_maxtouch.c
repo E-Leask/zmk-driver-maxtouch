@@ -59,21 +59,24 @@ static void mxt_report_data(const struct device *dev) {
 
     // Read messages from T5 until FIFO is empty (report_id == 0xFF or 0x00)
     for (int i = 0; i < 20; i++) {
-        struct mxt_message msg;
+        struct mxt_message msg = {0};
+        uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(msg))
+                               ? data->t5_max_message_size
+                               : 11;
 
-        ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, sizeof(msg));
+        ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
         if (ret < 0) {
             LOG_ERR("Failed to read message from T5: %d", ret);
             break;
         }
 
+        LOG_INF("T5 raw read (len %d): rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                read_len, msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
+
         // 0xFF indicates no more messages in T5 FIFO
         if (msg.report_id == 0xFF || msg.report_id == 0x00) {
             break;
         }
-
-        LOG_INF("Read T5 message: report_id=%d, data=[%02x %02x %02x %02x %02x %02x]",
-                msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
 
         if (is_t100_report(dev, msg.report_id)) {
             uint8_t finger_idx = msg.report_id - data->t100_first_report_id - 2;
@@ -137,6 +140,8 @@ static void mxt_work_cb(struct k_work *work) {
     struct mxt_data *data = CONTAINER_OF(work, struct mxt_data, work);
     const struct mxt_config *config = data->dev->config;
 
+    LOG_INF("mxt_work_cb triggered, CHG pin level=%d", gpio_pin_get_dt(&config->chg));
+
     int retries = 50;
     do {
         mxt_report_data(data->dev);
@@ -188,8 +193,7 @@ static int mxt_load_object_table(const struct device *dev, struct mxt_informatio
             break;
         case 5:
             data->t5_message_processor_address = addr;
-            // We won't request a checksum, so subtract one
-            data->t5_max_message_size = obj_table.size_minus_one - 1;
+            data->t5_max_message_size = obj_table.size_minus_one + 1;
             break;
         case 6:
             data->t6_command_processor_address = addr;

@@ -83,7 +83,7 @@ struct mxt_information_block {
 
 struct mxt_message {
     uint8_t report_id;
-    uint8_t data[6];
+    uint8_t data[15];
 } __packed;
 
 struct mxt_message_count {
