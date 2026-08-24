@@ -30,6 +30,10 @@ struct mxt_data {
     uint16_t t6_command_processor_report_id;
     uint16_t t25_self_test_report_id;
     uint16_t t100_first_report_id;
+
+    int16_t prev_x[5];
+    int16_t prev_y[5];
+    bool finger_active[5];
 };
 
 struct mxt_config {

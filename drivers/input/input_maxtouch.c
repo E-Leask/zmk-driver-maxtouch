@@ -72,7 +72,7 @@ static void mxt_report_data(const struct device *dev) {
             break;
         }
 
-        LOG_DBG("Read T5 message: report_id=%d, data=[%02x %02x %02x %02x %02x %02x]",
+        LOG_INF("Read T5 message: report_id=%d, data=[%02x %02x %02x %02x %02x %02x]",
                 msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
 
         if (is_t100_report(dev, msg.report_id)) {
@@ -84,6 +84,25 @@ static void mxt_report_data(const struct device *dev) {
             uint16_t y_pos = msg.data[3] + (msg.data[4] << 8);
 
             LOG_INF("Touch event: ev=%d, finger=%d, X=%d, Y=%d", ev, finger_idx, x_pos, y_pos);
+
+            if (finger_idx < 5) {
+                if (ev == DOWN) {
+                    data->finger_active[finger_idx] = true;
+                    data->prev_x[finger_idx] = x_pos;
+                    data->prev_y[finger_idx] = y_pos;
+                } else if (ev == MOVE && data->finger_active[finger_idx]) {
+                    int16_t dx = (int16_t)x_pos - data->prev_x[finger_idx];
+                    int16_t dy = (int16_t)y_pos - data->prev_y[finger_idx];
+                    data->prev_x[finger_idx] = x_pos;
+                    data->prev_y[finger_idx] = y_pos;
+                    if (dx != 0 || dy != 0) {
+                        input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
+                        input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
+                    }
+                } else if (ev == UP) {
+                    data->finger_active[finger_idx] = false;
+                }
+            }
 
             switch (ev) {
             case DOWN:
@@ -104,8 +123,6 @@ static void mxt_report_data(const struct device *dev) {
             default:
                 break;
             }
-        } else {
-            LOG_HEXDUMP_DBG(msg.data, 5, "message data");
         }
     }
 
