@@ -20,21 +20,21 @@ static int mxt_seq_read(const struct device *dev, const uint16_t addr, void *buf
     return i2c_write_read_dt(&config->bus, &addr_lsb, sizeof(addr_lsb), buf, len);
 }
 
-static int mxt_seq_write(const struct device *dev, const uint16_t addr, void *buf,
+static int mxt_seq_write(const struct device *dev, const uint16_t addr, const void *buf,
                          const uint8_t len) {
     const struct mxt_config *config = dev->config;
-    struct i2c_msg msg[2];
+    uint8_t tx_buf[128];
+
+    if (len + 2 > sizeof(tx_buf)) {
+        LOG_ERR("Write length %d exceeds buffer size", len);
+        return -EINVAL;
+    }
 
     const uint16_t addr_lsb = sys_cpu_to_le16(addr);
-    msg[0].buf = (uint8_t *)&addr_lsb;
-    msg[0].len = 2U;
-    msg[0].flags = I2C_MSG_WRITE;
+    memcpy(&tx_buf[0], &addr_lsb, 2);
+    memcpy(&tx_buf[2], buf, len);
 
-    msg[1].buf = (uint8_t *)buf;
-    msg[1].len = len;
-    msg[1].flags = I2C_MSG_WRITE | I2C_MSG_STOP;
-
-    return i2c_transfer_dt(&config->bus, msg, 2);
+    return i2c_write_dt(&config->bus, tx_buf, len + 2);
 }
 
 static inline bool is_t100_report(const struct device *dev, int report_id) {
@@ -420,6 +420,14 @@ static int mxt_load_config(const struct device *dev,
         if (ret < 0) {
             LOG_ERR("Failed to set T100 config: %d", ret);
             return ret;
+        }
+
+        struct mxt_touch_multiscreen_t100 t100_verify = {0};
+        ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_verify,
+                           sizeof(t100_verify));
+        if (ret == 0) {
+            LOG_INF("Verified T100 in chip SRAM: ctrl=0x%02x, tchevt=0x%02x, tchaux=0x%02x, tchthr=%d",
+                    t100_verify.ctrl, t100_verify.tcheventcfg, t100_verify.tchaux, t100_verify.tchthr);
         }
     }
 
