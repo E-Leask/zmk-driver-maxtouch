@@ -57,36 +57,48 @@ static void mxt_report_data(const struct device *dev) {
     uint16_t pending_fingers = 0;
     bool last_touch_status = false;
 
-    uint8_t t44_count = 0;
+    uint8_t t44_buf[12] = {0};
+    uint8_t msg_count = 0;
+    struct mxt_message msg = {0};
+
     if (data->t44_message_count_address) {
-        ret = mxt_seq_read(dev, data->t44_message_count_address, &t44_count, 1);
+        ret = mxt_seq_read(dev, data->t44_message_count_address, t44_buf, sizeof(t44_buf));
         if (ret == 0) {
-            LOG_INF("T44 count: %d", t44_count);
+            msg_count = t44_buf[0];
+            msg.report_id = t44_buf[1];
+            memcpy(msg.data, &t44_buf[2], sizeof(msg.data) < 10 ? sizeof(msg.data) : 10);
+
+            LOG_INF("T44+T5 burst read: count=%d, rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    msg_count, msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
         }
     }
 
-    int read_iterations = (t44_count > 0) ? t44_count : 10;
-
-    // Read messages from T5
-    for (int i = 0; i < read_iterations; i++) {
-        struct mxt_message msg = {0};
+    if (msg_count == 0 && (msg.report_id == 0xFF || msg.report_id == 0x00)) {
+        // Fallback: read directly from T5
         uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(msg))
                                ? data->t5_max_message_size
                                : 11;
-
         ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
-        if (ret < 0) {
-            LOG_ERR("Failed to read message from T5: %d", ret);
-            break;
+        if (ret == 0) {
+            LOG_INF("T5 direct read: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
         }
+    }
 
-        LOG_INF("T5 read (i=%d, len=%d): rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                i, read_len, msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
-
-        if (msg.report_id == 0xFF || msg.report_id == 0x00) {
-            if (t44_count == 0) {
+    int total_messages = (msg_count > 0) ? msg_count : 1;
+    for (int i = 0; i < total_messages; i++) {
+        if (i > 0) {
+            uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(msg))
+                                   ? data->t5_max_message_size
+                                   : 11;
+            ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
+            if (ret < 0) {
                 break;
             }
+        }
+
+        if (msg.report_id == 0xFF || msg.report_id == 0x00) {
+            break;
         }
 
         if (is_t100_report(dev, msg.report_id)) {
