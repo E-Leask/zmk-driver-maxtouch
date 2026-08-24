@@ -353,6 +353,8 @@ static int mxt_load_config(const struct device *dev,
 
         t100_conf.ctrl =
             MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_SCANEN;
+        t100_conf.tcheventcfg = 0x1F; // Enable DOWN, UP, MOVE, UNSUP, SUP event reports
+        t100_conf.tchaux = 0x01;      // Enable X/Y vector coordinate reporting
 
         uint8_t cfg1 = 0;
         if (config->repeat_each_cycle) {
@@ -372,6 +374,16 @@ static int mxt_load_config(const struct device *dev,
         t100_conf.numtch = config->max_touch_points;
         t100_conf.xsize = information->matrix_x_size;
         t100_conf.ysize = information->matrix_y_size;
+
+        if (t100_conf.tchthr == 0) {
+            t100_conf.tchthr = (config->touch_threshold > 0) ? config->touch_threshold : 20;
+        }
+        if (t100_conf.gain == 0) {
+            t100_conf.gain = (config->gain > 0) ? config->gain : 4;
+        }
+
+        LOG_INF("Setting T100: ctrl=0x%02x, tchevt=0x%02x, tchaux=0x%02x, gain=%d, tchthr=%d",
+                t100_conf.ctrl, t100_conf.tcheventcfg, t100_conf.tchaux, t100_conf.gain, t100_conf.tchthr);
 
         if (config->sensor_width > 0 && information->matrix_x_size > 0) {
             t100_conf.xpitch = (config->sensor_width * 10 / information->matrix_x_size);
