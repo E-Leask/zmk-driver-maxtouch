@@ -57,8 +57,18 @@ static void mxt_report_data(const struct device *dev) {
     uint16_t pending_fingers = 0;
     bool last_touch_status = false;
 
-    // Read messages from T5 until FIFO is empty (report_id == 0xFF or 0x00)
-    for (int i = 0; i < 20; i++) {
+    uint8_t t44_count = 0;
+    if (data->t44_message_count_address) {
+        ret = mxt_seq_read(dev, data->t44_message_count_address, &t44_count, 1);
+        if (ret == 0) {
+            LOG_INF("T44 count: %d", t44_count);
+        }
+    }
+
+    int read_iterations = (t44_count > 0) ? t44_count : 10;
+
+    // Read messages from T5
+    for (int i = 0; i < read_iterations; i++) {
         struct mxt_message msg = {0};
         uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(msg))
                                ? data->t5_max_message_size
@@ -70,12 +80,13 @@ static void mxt_report_data(const struct device *dev) {
             break;
         }
 
-        LOG_INF("T5 raw read (len %d): rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                read_len, msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
+        LOG_INF("T5 read (i=%d, len=%d): rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                i, read_len, msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
 
-        // 0xFF indicates no more messages in T5 FIFO
         if (msg.report_id == 0xFF || msg.report_id == 0x00) {
-            break;
+            if (t44_count == 0) {
+                break;
+            }
         }
 
         if (is_t100_report(dev, msg.report_id)) {
