@@ -259,6 +259,7 @@ static int mxt_load_object_table(const struct device *dev, struct mxt_informatio
         case 100:
             data->t100_multiple_touch_touchscreen_address = addr;
             data->t100_first_report_id = report_id;
+            data->t100_size = obj_table.size_minus_one + 1;
             break;
         }
 
@@ -351,80 +352,44 @@ static int mxt_load_config(const struct device *dev,
 
     if (data->t100_multiple_touch_touchscreen_address) {
         struct mxt_touch_multiscreen_t100 t100_conf = {0};
+        uint8_t t100_len = (data->t100_size > 0 && data->t100_size <= sizeof(t100_conf))
+                               ? data->t100_size
+                               : 62;
 
-        ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf,
-                           sizeof(t100_conf));
+        ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf, t100_len);
         if (ret < 0) {
             LOG_ERR("Failed to load the initial T100 config: %d", ret);
             return ret;
         }
 
-        LOG_INF("Factory T100: ctrl=0x%02x, gain=%d, tchthr=%d, xrange=%d, yrange=%d",
-                t100_conf.ctrl, t100_conf.gain, t100_conf.tchthr,
+        LOG_INF("Factory T100 (size %d): ctrl=0x%02x, gain=%d, tchthr=%d, xrange=%d, yrange=%d",
+                t100_len, t100_conf.ctrl, t100_conf.gain, t100_conf.tchthr,
                 sys_le16_to_cpu(t100_conf.xrange), sys_le16_to_cpu(t100_conf.yrange));
 
-        t100_conf.ctrl =
-            MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_SCANEN;
-        t100_conf.tcheventcfg = 0x1F; // Enable DOWN, UP, MOVE, UNSUP, SUP event reports
+        // Enable T100 touch object, message reporting, and scanning
+        t100_conf.ctrl = 0x8F;
+        t100_conf.tcheventcfg = 0xFF; // Enable all touch event reports (DOWN, MOVE, UP)
         t100_conf.tchaux = 0x01;      // Enable X/Y vector coordinate reporting
+        t100_conf.scraux = 0x07;
 
-        uint8_t cfg1 = 0;
-        if (config->repeat_each_cycle) {
-            cfg1 |= MXT_T100_CFG_RPTEACHCYCLE;
-        }
         if (config->swap_xy) {
-            cfg1 |= MXT_T100_CFG_SWITCHXY;
+            t100_conf.cfg1 |= MXT_T100_CFG_SWITCHXY;
         }
         if (config->invert_x) {
-            cfg1 |= MXT_T100_CFG_INVERTX;
+            t100_conf.cfg1 |= MXT_T100_CFG_INVERTX;
         }
         if (config->invert_y) {
-            cfg1 |= MXT_T100_CFG_INVERTY;
-        }
-        t100_conf.cfg1 = cfg1;
-        t100_conf.scraux = 0x7;
-        t100_conf.numtch = config->max_touch_points;
-        t100_conf.xsize = information->matrix_x_size;
-        t100_conf.ysize = information->matrix_y_size;
-
-        if (t100_conf.tchthr == 0) {
-            t100_conf.tchthr = (config->touch_threshold > 0) ? config->touch_threshold : 20;
-        }
-        if (t100_conf.gain == 0) {
-            t100_conf.gain = (config->gain > 0) ? config->gain : 4;
+            t100_conf.cfg1 |= MXT_T100_CFG_INVERTY;
         }
 
-        LOG_INF("Setting T100: ctrl=0x%02x, tchevt=0x%02x, tchaux=0x%02x, gain=%d, tchthr=%d",
-                t100_conf.ctrl, t100_conf.tcheventcfg, t100_conf.tchaux, t100_conf.gain, t100_conf.tchthr);
-
-        if (config->sensor_width > 0 && information->matrix_x_size > 0) {
-            t100_conf.xpitch = (config->sensor_width * 10 / information->matrix_x_size);
-        }
-        if (config->sensor_height > 0 && information->matrix_y_size > 0) {
-            t100_conf.ypitch = (config->sensor_height * 10 / information->matrix_y_size);
-        }
-
-        uint16_t logical_x = config->sensor_width * 10;
-        uint16_t logical_y = config->sensor_height * 10;
-
-        if (config->swap_xy) {
-            t100_conf.xrange = sys_cpu_to_le16(logical_y - 1);
-            t100_conf.yrange = sys_cpu_to_le16(logical_x - 1);
-        } else {
-            t100_conf.xrange = sys_cpu_to_le16(logical_x - 1);
-            t100_conf.yrange = sys_cpu_to_le16(logical_y - 1);
-        }
-
-        ret = mxt_seq_write(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf,
-                            sizeof(t100_conf));
+        ret = mxt_seq_write(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf, t100_len);
         if (ret < 0) {
             LOG_ERR("Failed to set T100 config: %d", ret);
             return ret;
         }
 
         struct mxt_touch_multiscreen_t100 t100_verify = {0};
-        ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_verify,
-                           sizeof(t100_verify));
+        ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_verify, t100_len);
         if (ret == 0) {
             LOG_INF("Verified T100 in chip SRAM: ctrl=0x%02x, tchevt=0x%02x, tchaux=0x%02x, tchthr=%d",
                     t100_verify.ctrl, t100_verify.tcheventcfg, t100_verify.tchaux, t100_verify.tchthr);
