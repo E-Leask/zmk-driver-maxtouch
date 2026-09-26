@@ -37,17 +37,14 @@ properties:
 
   idle-acq-time-ms:
     type: int
-    default: 32
     description: Acquisition interval in idle mode in milliseconds
 
   active-acq-time-ms:
     type: int
-    default: 10
     description: Acquisition interval in active mode in milliseconds
 
   active-to-idle-timeout-ms:
     type: int
-    default: 50
     description: Inactivity duration before switching from active to idle mode
 
   sensor-width:
@@ -87,7 +84,6 @@ properties:
 
   charge-time:
     type: int
-    default: 10
     description: Charge time for sensor lines.
 
   allowed-measurement-types:

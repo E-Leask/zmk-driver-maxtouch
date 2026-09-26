@@ -16,6 +16,7 @@ struct mxt_data {
     uint16_t t6_command_processor_address;
     uint16_t t7_powerconfig_address;
     uint16_t t8_acquisitionconfig_address;
+    uint16_t t18_comms_config_address;
     uint16_t t25_self_test_address;
     uint16_t t37_diagnostic_debug_address;
     uint16_t t42_proci_touchsupression_address;
@@ -38,28 +39,30 @@ struct mxt_data {
 };
 
 struct mxt_config {
-    const struct i2c_dt_spec bus;
-    const struct gpio_dt_spec chg;
-    const uint8_t idle_acq_time;
-    const uint8_t active_acq_time;
-    const uint8_t active_to_idle_timeout;
-    const uint8_t max_touch_points;
-    const bool swap_xy;
-    const bool invert_x;
-    const bool invert_y;
-    const bool repeat_each_cycle;
-    const uint16_t sensor_width;
-    const uint16_t sensor_height;
-    const uint8_t touch_threshold;
-    const uint8_t touch_hysteresis;
-    const uint8_t internal_touch_threshold;
-    const uint8_t internal_touch_hysteresis;
-    const uint8_t gain;
-    const uint8_t charge_time;
-    const uint8_t allowed_measurement_types;
-    const uint8_t active_syncs_per_x;
-    const uint8_t idle_syncs_per_x;
-    const bool retransmission_compensation_disable;
+    struct i2c_dt_spec bus;
+    struct gpio_dt_spec chg;
+    uint8_t idle_acq_time;
+    uint8_t active_acq_time;
+    uint8_t active_to_idle_timeout;
+    bool has_t7_config;
+    uint8_t max_touch_points;
+    bool swap_xy;
+    bool invert_x;
+    bool invert_y;
+    bool repeat_each_cycle;
+    uint16_t sensor_width;
+    uint16_t sensor_height;
+    uint8_t touch_threshold;
+    uint8_t touch_hysteresis;
+    uint8_t internal_touch_threshold;
+    uint8_t internal_touch_hysteresis;
+    uint8_t gain;
+    uint8_t charge_time;
+    bool has_charge_time;
+    uint8_t allowed_measurement_types;
+    uint8_t active_syncs_per_x;
+    uint8_t idle_syncs_per_x;
+    bool retransmission_compensation_disable;
 };
 
 #define MXT_REG_INFORMATION_BLOCK (0)
@@ -158,6 +161,14 @@ struct mxt_gen_acquisitionconfig_t8 {
     uint8_t reserved2[3];
     uint8_t cfg;
 } __packed;
+
+struct mxt_spt_commsconfig_t18 {
+    uint8_t ctrl;
+    uint8_t cmd;
+} __packed;
+
+#define MXT_T18_CTRL_MODE_MASK 0x01
+#define MXT_T18_CTRL_RETRIGEN  0x40
 
 struct mxt_spt_selftest_t25 {
     uint8_t ctrl;

@@ -228,6 +228,9 @@ static int mxt_load_object_table(const struct device *dev, struct mxt_informatio
         case 8:
             data->t8_acquisitionconfig_address = addr;
             break;
+        case 18:
+            data->t18_comms_config_address = addr;
+            break;
         case 25:
             data->t25_self_test_address = addr;
             data->t25_self_test_report_id = report_id;
@@ -280,15 +283,29 @@ static int mxt_load_config(const struct device *dev,
         struct mxt_gen_powerconfig_t7 t7_conf = {0};
         ret = mxt_seq_read(dev, data->t7_powerconfig_address, &t7_conf, sizeof(t7_conf));
         if (ret == 0) {
-            t7_conf.idleacqint = config->idle_acq_time;
-            t7_conf.actacqint = config->active_acq_time;
-            t7_conf.actv2idleto = config->active_to_idle_timeout;
-            t7_conf.cfg |= (MXT_T7_CFG_ACTVPIPEEN | MXT_T7_CFG_IDLEPIPEEN | MXT_T7_CFG_INITACTV);
+            LOG_INF("Factory T7 Power: idleacqint=%d, actacqint=%d, actv2idleto=%d, cfg=0x%02x",
+                    t7_conf.idleacqint, t7_conf.actacqint, t7_conf.actv2idleto, t7_conf.cfg);
 
-            ret = mxt_seq_write(dev, data->t7_powerconfig_address, &t7_conf, sizeof(t7_conf));
-            if (ret < 0) {
-                LOG_ERR("Failed to set T7 config: %d", ret);
-                return ret;
+            if (config->has_t7_config) {
+                if (config->idle_acq_time > 0) {
+                    t7_conf.idleacqint = config->idle_acq_time;
+                }
+                if (config->active_acq_time > 0) {
+                    t7_conf.actacqint = config->active_acq_time;
+                }
+                if (config->active_to_idle_timeout > 0) {
+                    t7_conf.actv2idleto = config->active_to_idle_timeout;
+                }
+                t7_conf.cfg |= (MXT_T7_CFG_ACTVPIPEEN | MXT_T7_CFG_IDLEPIPEEN | MXT_T7_CFG_INITACTV);
+
+                ret = mxt_seq_write(dev, data->t7_powerconfig_address, &t7_conf, sizeof(t7_conf));
+                if (ret < 0) {
+                    LOG_ERR("Failed to set T7 config: %d", ret);
+                    return ret;
+                }
+                LOG_INF("Updated T7 Power config from DTS");
+            } else {
+                LOG_INF("Preserving factory T7 Power configuration");
             }
         }
     }
@@ -297,18 +314,39 @@ static int mxt_load_config(const struct device *dev,
         struct mxt_gen_acquisitionconfig_t8 t8_conf = {0};
         ret = mxt_seq_read(dev, data->t8_acquisitionconfig_address, &t8_conf, sizeof(t8_conf));
         if (ret == 0) {
-            t8_conf.chrgtime = config->charge_time;
-            ret = mxt_seq_write(dev, data->t8_acquisitionconfig_address, &t8_conf, sizeof(t8_conf));
-            if (ret < 0) {
-                LOG_ERR("Failed to set T8 config: %d", ret);
-                return ret;
+            LOG_INF("Factory T8 Acquisition: chrgtime=%d, tchdrift=%d, driftst=%d, tchautocal=%d",
+                    t8_conf.chrgtime, t8_conf.tchdrift, t8_conf.driftst, t8_conf.tchautocal);
+
+            if (config->has_charge_time) {
+                t8_conf.chrgtime = config->charge_time;
+                ret = mxt_seq_write(dev, data->t8_acquisitionconfig_address, &t8_conf, sizeof(t8_conf));
+                if (ret < 0) {
+                    LOG_ERR("Failed to set T8 config: %d", ret);
+                    return ret;
+                }
+                LOG_INF("Updated T8 charge time to %d from DTS", config->charge_time);
+            } else {
+                LOG_INF("Preserving factory T8 Acquisition configuration");
             }
+        }
+    }
+
+    // Inspect factory Communications Configuration (T18) for CHG mode (Mode 0 vs Mode 1)
+    if (data->t18_comms_config_address) {
+        struct mxt_spt_commsconfig_t18 t18_conf = {0};
+        ret = mxt_seq_read(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
+        if (ret == 0) {
+            uint8_t mode = t18_conf.ctrl & MXT_T18_CTRL_MODE_MASK;
+            uint8_t retrigen = (t18_conf.ctrl & MXT_T18_CTRL_RETRIGEN) ? 1 : 0;
+            LOG_INF("Factory T18 COMMSCONFIG (0x%04x): ctrl=0x%02x, cmd=0x%02x (CHG mode=%d [%s], retrigen=%d)",
+                    data->t18_comms_config_address, t18_conf.ctrl, t18_conf.cmd,
+                    mode, mode ? "Mode 1 (level)" : "Mode 0 (edge)", retrigen);
         }
     }
 
 #ifdef MXT_ENABLE_STYLUS
     if (data->t42_proci_touchsupression_address) {
-        struct mxt_proci_touchsupression_t42 t42_conf = {};
+        struct mxt_proci_touchsupression_t42 t42_conf = {0};
 
         t42_conf.ctrl = MXT_T42_CTRL_ENABLE | MXT_T42_CTRL_SHAPEEN;
         t42_conf.maxapprarea = 0;   // Default (0): suppress any touch that approaches >40 channels.
@@ -333,7 +371,7 @@ static int mxt_load_config(const struct device *dev,
 
     // Preserve factory Mutual Capacitive Touch Engine (CTE) configuration (drive voltages, syncs, timings)
     if (data->t46_cte_config_address) {
-        struct mxt_spt_cteconfig_t46 t46_conf = {};
+        struct mxt_spt_cteconfig_t46 t46_conf = {0};
         ret = mxt_seq_read(dev, data->t46_cte_config_address, &t46_conf, sizeof(t46_conf));
         if (ret == 0) {
             LOG_INF("Factory T46 CTE: xvoltage=%d, syncdelay=%d, activesyncsperx=%d",
@@ -342,7 +380,7 @@ static int mxt_load_config(const struct device *dev,
     }
 
     if (data->t80_proci_retransmissioncompensation_address) {
-        struct mxt_proci_retransmissioncompensation_t80 t80_conf = {};
+        struct mxt_proci_retransmissioncompensation_t80 t80_conf = {0};
         ret = mxt_seq_read(dev, data->t80_proci_retransmissioncompensation_address, &t80_conf, sizeof(t80_conf));
         if (ret == 0) {
             t80_conf.ctrl = (config->retransmission_compensation_disable == false);
@@ -472,9 +510,12 @@ static int mxt_init(const struct device *dev) {
         .bus = I2C_DT_SPEC_INST_GET(n),                                                                 \
         .chg = GPIO_DT_SPEC_GET_OR(DT_DRV_INST(n), chg_gpios, {}),                                      \
         .max_touch_points = DT_INST_PROP_OR(n, max_touch_points, 5),                                    \
-        .idle_acq_time = DT_INST_PROP_OR(n, idle_acq_time_ms, 32),                                      \
-        .active_acq_time = DT_INST_PROP_OR(n, active_acq_time_ms, 10),                                  \
-        .active_to_idle_timeout = DT_INST_PROP_OR(n, active_to_idle_timeout_ms, 50),                    \
+        .idle_acq_time = DT_INST_PROP_OR(n, idle_acq_time_ms, 0),                                       \
+        .active_acq_time = DT_INST_PROP_OR(n, active_acq_time_ms, 0),                                   \
+        .active_to_idle_timeout = DT_INST_PROP_OR(n, active_to_idle_timeout_ms, 0),                     \
+        .has_t7_config = DT_INST_NODE_HAS_PROP(n, idle_acq_time_ms) ||                                  \
+                         DT_INST_NODE_HAS_PROP(n, active_acq_time_ms) ||                                 \
+                         DT_INST_NODE_HAS_PROP(n, active_to_idle_timeout_ms),                            \
         .repeat_each_cycle = DT_INST_PROP(n, repeat_each_cycle),                                        \
         .swap_xy = DT_INST_PROP(n, swap_xy),                                                            \
         .invert_x = DT_INST_PROP(n, invert_x),                                                          \
@@ -486,7 +527,8 @@ static int mxt_init(const struct device *dev) {
         .internal_touch_threshold = DT_INST_PROP_OR(n, internal_touch_threshold, 10),                   \
         .internal_touch_hysteresis = DT_INST_PROP_OR(n, internal_touch_hysteresis, 4),                  \
         .gain = DT_INST_PROP_OR(n, gain, 4),                                                            \
-        .charge_time = DT_INST_PROP_OR(n, charge_time, 10),                                             \
+        .charge_time = DT_INST_PROP_OR(n, charge_time, 0),                                              \
+        .has_charge_time = DT_INST_NODE_HAS_PROP(n, charge_time),                                       \
         .allowed_measurement_types = DT_INST_PROP_OR(n, allowed_measurement_types, 3),                  \
         .active_syncs_per_x = DT_INST_PROP_OR(n, active_syncs_per_x, 20),                               \
         .idle_syncs_per_x = DT_INST_PROP_OR(n, idle_syncs_per_x, 20),                                   \
