@@ -111,6 +111,13 @@ struct mxt_gen_commandprocessor_t6 {
     uint8_t debugctrl2;
 } __packed;
 
+#define MXT_T6_STATUS_RESET                             BIT(7)
+#define MXT_T6_STATUS_OFL                               BIT(6)
+#define MXT_T6_STATUS_SIGERR                            BIT(5)
+#define MXT_T6_STATUS_CAL                               BIT(4)
+#define MXT_T6_STATUS_CFGERR                            BIT(3)
+#define MXT_T6_STATUS_COMSERR                           BIT(2)
+
 #define MXT_T6_DIAGNOSTIC_PAGE_UP                               0x01
 #define MXT_T6_DIAGNOSTIC_PAGE_DOWN                             0x02
 #define MXT_T6_DIAGNOSTIC_MUTUAL_CAPACITANCE_DELTA_MODE         0x10

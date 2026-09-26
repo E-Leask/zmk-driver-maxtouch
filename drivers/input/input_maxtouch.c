@@ -45,13 +45,13 @@ static inline bool is_t100_report(const struct device *dev, int report_id) {
             report_id < data->t100_first_report_id + 2 + config->max_touch_points);
 }
 
-static void mxt_report_data(const struct device *dev) {
+static int mxt_report_data(const struct device *dev) {
     struct mxt_data *data = dev->data;
     int ret;
 
     if (!data->t5_message_processor_address) {
         LOG_WRN("No T5 message processor object found!");
-        return;
+        return 0;
     }
 
     uint16_t pending_fingers = 0;
@@ -85,7 +85,12 @@ static void mxt_report_data(const struct device *dev) {
         }
     }
 
+    if (msg_count == 0 && (msg.report_id == 0xFF || msg.report_id == 0x00)) {
+        return 0; // FIFO is empty
+    }
+
     int total_messages = (msg_count > 0) ? msg_count : 1;
+    int messages_processed = 0;
     for (int i = 0; i < total_messages; i++) {
         if (i > 0) {
             uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(msg))
@@ -99,6 +104,22 @@ static void mxt_report_data(const struct device *dev) {
 
         if (msg.report_id == 0xFF || msg.report_id == 0x00) {
             break;
+        }
+
+        messages_processed++;
+
+        if (msg.report_id == data->t6_command_processor_report_id) {
+            uint8_t status = msg.data[0];
+            LOG_INF("T6 Status Report: 0x%02x%s%s%s%s%s%s%s",
+                    status,
+                    status == 0 ? " OK" : "",
+                    (status & MXT_T6_STATUS_RESET) ? " RESET" : "",
+                    (status & MXT_T6_STATUS_OFL) ? " OFL" : "",
+                    (status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
+                    (status & MXT_T6_STATUS_CAL) ? " CAL" : "",
+                    (status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "",
+                    (status & MXT_T6_STATUS_COMSERR) ? " COMSERR" : "");
+            continue;
         }
 
         if (is_t100_report(dev, msg.report_id)) {
@@ -156,7 +177,7 @@ static void mxt_report_data(const struct device *dev) {
         input_report_key(dev, INPUT_BTN_TOUCH, last_touch_status, true, K_FOREVER);
     }
 
-    return;
+    return messages_processed;
 }
 
 static void mxt_work_cb(struct k_work *work) {
@@ -166,9 +187,15 @@ static void mxt_work_cb(struct k_work *work) {
     LOG_INF("mxt_work_cb triggered, CHG pin level=%d", gpio_pin_get_dt(&config->chg));
 
     int retries = 50;
-    do {
-        mxt_report_data(data->dev);
-    } while (gpio_pin_get_dt(&config->chg) == 1 && --retries > 0);
+    while (--retries > 0) {
+        int processed = mxt_report_data(data->dev);
+        if (processed == 0) {
+            break;
+        }
+        if (gpio_pin_get_dt(&config->chg) == 0) {
+            break;
+        }
+    }
 }
 
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
@@ -331,7 +358,7 @@ static int mxt_load_config(const struct device *dev,
         }
     }
 
-    // Inspect factory Communications Configuration (T18) for CHG mode (Mode 0 vs Mode 1)
+    // Configure Communications Configuration (T18) for Mode 1 with RETRIGEN
     if (data->t18_comms_config_address) {
         struct mxt_spt_commsconfig_t18 t18_conf = {0};
         ret = mxt_seq_read(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
@@ -341,6 +368,15 @@ static int mxt_load_config(const struct device *dev,
             LOG_INF("Factory T18 COMMSCONFIG (0x%04x): ctrl=0x%02x, cmd=0x%02x (CHG mode=%d [%s], retrigen=%d)",
                     data->t18_comms_config_address, t18_conf.ctrl, t18_conf.cmd,
                     mode, mode ? "Mode 1 (level)" : "Mode 0 (edge)", retrigen);
+
+            // 0x44: RETRIGEN enabled (bit 6) + retrigger stability / level trigger (bit 2)
+            t18_conf.ctrl = 0x44;
+            ret = mxt_seq_write(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
+            if (ret < 0) {
+                LOG_ERR("Failed to set T18 COMMSCONFIG: %d", ret);
+                return ret;
+            }
+            LOG_INF("Configured T18 COMMSCONFIG to 0x44 (Mode 1 / RETRIGEN)");
         }
     }
 
@@ -400,41 +436,67 @@ static int mxt_load_config(const struct device *dev,
             return ret;
         }
 
-        LOG_INF("Factory T100 (size %d): ctrl=0x%02x, gain=%d, tchthr=%d, xrange=%d, yrange=%d",
-                t100_len, t100_conf.ctrl, t100_conf.gain, t100_conf.tchthr,
+        LOG_INF("Factory T100 (size %d): ctrl=0x%02x, cfg1=0x%02x, scraux=0x%02x, tchaux=0x%02x, "
+                "tchevt=0x%02x, gain=%d, tchthr=%d, xrange=%d, yrange=%d",
+                t100_len, t100_conf.ctrl, t100_conf.cfg1, t100_conf.scraux, t100_conf.tchaux,
+                t100_conf.tcheventcfg, t100_conf.gain, t100_conf.tchthr,
                 sys_le16_to_cpu(t100_conf.xrange), sys_le16_to_cpu(t100_conf.yrange));
 
-        // Enable T100 touch object, message reporting, and scanning
-        t100_conf.ctrl = 0x8F;
-        t100_conf.tcheventcfg = 0xFF; // Enable all touch event reports (DOWN, MOVE, UP)
-        t100_conf.tchaux = 0x01;      // Enable X/Y vector coordinate reporting
-        t100_conf.scraux = 0x07;
+        // Ensure touch scanning, report generation, and object enable are active
+        bool t100_modified = false;
+        if ((t100_conf.ctrl & 0x83) != 0x83) {
+            t100_conf.ctrl |= (MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_SCANEN);
+            t100_modified = true;
+        }
 
-        if (config->swap_xy) {
+        // Apply axis configuration from device tree
+        if (config->swap_xy && !(t100_conf.cfg1 & MXT_T100_CFG_SWITCHXY)) {
             t100_conf.cfg1 |= MXT_T100_CFG_SWITCHXY;
+            t100_modified = true;
         }
-        if (config->invert_x) {
+        if (config->invert_x && !(t100_conf.cfg1 & MXT_T100_CFG_INVERTX)) {
             t100_conf.cfg1 |= MXT_T100_CFG_INVERTX;
+            t100_modified = true;
         }
-        if (config->invert_y) {
+        if (config->invert_y && !(t100_conf.cfg1 & MXT_T100_CFG_INVERTY)) {
             t100_conf.cfg1 |= MXT_T100_CFG_INVERTY;
+            t100_modified = true;
         }
 
-        ret = mxt_seq_write(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf, t100_len);
-        if (ret < 0) {
-            LOG_ERR("Failed to set T100 config: %d", ret);
-            return ret;
-        }
+        if (t100_modified) {
+            ret = mxt_seq_write(dev, data->t100_multiple_touch_touchscreen_address, &t100_conf, t100_len);
+            if (ret < 0) {
+                LOG_ERR("Failed to set T100 config: %d", ret);
+                return ret;
+            }
 
-        struct mxt_touch_multiscreen_t100 t100_verify = {0};
-        ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_verify, t100_len);
-        if (ret == 0) {
-            LOG_INF("Verified T100 in chip SRAM: ctrl=0x%02x, tchevt=0x%02x, tchaux=0x%02x, tchthr=%d",
-                    t100_verify.ctrl, t100_verify.tcheventcfg, t100_verify.tchaux, t100_verify.tchthr);
+            struct mxt_touch_multiscreen_t100 t100_verify = {0};
+            ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_verify, t100_len);
+            if (ret == 0) {
+                LOG_INF("Verified T100 in chip SRAM: ctrl=0x%02x, cfg1=0x%02x, tchevt=0x%02x, tchaux=0x%02x, tchthr=%d",
+                        t100_verify.ctrl, t100_verify.cfg1, t100_verify.tcheventcfg, t100_verify.tchaux, t100_verify.tchthr);
+            }
+        } else {
+            LOG_INF("Preserving factory T100 touch configuration");
         }
     }
 
     if (data->t6_command_processor_address) {
+        // Read initial T6 status
+        uint8_t t6_status = 0;
+        ret = mxt_seq_read(dev, data->t6_command_processor_address, &t6_status, 1);
+        if (ret == 0) {
+            LOG_INF("T6 Status before calibrate (0x%04x): 0x%02x%s%s%s%s%s%s%s",
+                    data->t6_command_processor_address, t6_status,
+                    t6_status == 0 ? " OK" : "",
+                    (t6_status & MXT_T6_STATUS_RESET) ? " RESET" : "",
+                    (t6_status & MXT_T6_STATUS_OFL) ? " OFL" : "",
+                    (t6_status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
+                    (t6_status & MXT_T6_STATUS_CAL) ? " CAL" : "",
+                    (t6_status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "",
+                    (t6_status & MXT_T6_STATUS_COMSERR) ? " COMSERR" : "");
+        }
+
         uint8_t cal = 1;
         ret = mxt_seq_write(dev, data->t6_command_processor_address + 2, &cal, 1);
         if (ret < 0) {
@@ -486,17 +548,29 @@ static int mxt_init(const struct device *dev) {
     LOG_INF("CHG pin logical level at init: %d (port=%s, pin=%d)",
             gpio_pin_get_dt(&config->chg), config->chg.port->name, config->chg.pin);
 
+    // Drain any initial power-on / reset status messages from T5
+    int init_drain = 10;
+    while (--init_drain > 0) {
+        int processed = mxt_report_data(dev);
+        if (processed == 0 || gpio_pin_get_dt(&config->chg) == 0) {
+            break;
+        }
+    }
+
     ret = mxt_load_config(dev, &info);
     if (ret < 0) {
         LOG_ERR("Failed to load default config: %d", ret);
         return -EIO;
     }
 
-    // Give calibration 100ms to complete, then drain all messages until CHG is released
+    // Give calibration 100ms to complete, then drain all messages until CHG is released or queue is empty
     k_msleep(100);
     int drain_retries = 50;
-    while (gpio_pin_get_dt(&config->chg) == 1 && --drain_retries > 0) {
-        mxt_report_data(dev);
+    while (--drain_retries > 0) {
+        int processed = mxt_report_data(dev);
+        if (processed == 0 || gpio_pin_get_dt(&config->chg) == 0) {
+            break;
+        }
     }
 
     LOG_INF("CHG pin logical level after calibration & drain: %d", gpio_pin_get_dt(&config->chg));

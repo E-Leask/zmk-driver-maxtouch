@@ -21,7 +21,7 @@ extern "C" {
 int mxt_init(const struct device *dev);
 int mxt_load_object_table(const struct device *dev, struct mxt_information_block *info);
 int mxt_load_config(const struct device *dev, const struct mxt_information_block *information);
-void mxt_report_data(const struct device *dev);
+int mxt_report_data(const struct device *dev);
 
 // Step 1: C API Trampolines connecting C driver calls to GMock C++ methods
 bool i2c_is_ready_dt(const struct i2c_dt_spec *spec) {
@@ -182,9 +182,9 @@ TEST_F(MaxTouchTest, LoadObjectTableIdentifiesT18) {
 }
 
 /**
- * @brief Test that mxt_load_config preserves factory T7 and T8 and inspects T18 without writing
+ * @brief Test that mxt_load_config preserves factory T7 and T8 and configures T18 to 0x44
  */
-TEST_F(MaxTouchTest, PreserveFactoryT7T8AndInspectT18) {
+TEST_F(MaxTouchTest, PreserveFactoryT7T8AndConfigureT18) {
     data.t7_powerconfig_address = 0x048F;
     data.t8_acquisitionconfig_address = 0x0494;
     data.t18_comms_config_address = 0x04AE;
@@ -201,7 +201,7 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndInspectT18) {
     mock_t8.chrgtime = 15;
 
     struct mxt_spt_commsconfig_t18 mock_t18 = {};
-    mock_t18.ctrl = 0x41; // Mode 1 (level), RETRIGEN 1
+    mock_t18.ctrl = 0x00; // Mode 0 (edge), RETRIGEN 0
     mock_t18.cmd = 0x00;
 
     EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, sizeof(struct mxt_gen_powerconfig_t7)))
@@ -222,13 +222,51 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndInspectT18) {
             return 0;
         }));
 
-    // Expect NO writes to T7 or T8 or T18
-    EXPECT_CALL(mock_i2c, write_dt(&config.bus, ::testing::_, ::testing::_))
-        .Times(0);
+    // Expect write to T18 configuring 0x44 (size is 2 bytes data + 2 bytes addr = 4 bytes)
+    EXPECT_CALL(mock_i2c, write_dt(&config.bus, ::testing::_, sizeof(struct mxt_spt_commsconfig_t18) + 2))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void *buf, size_t num_bytes) {
+            const uint8_t *bytes = static_cast<const uint8_t*>(buf);
+            EXPECT_EQ(bytes[0], 0xAE);
+            EXPECT_EQ(bytes[1], 0x04);
+            EXPECT_EQ(bytes[2], 0x44); // ctrl = 0x44
+            EXPECT_EQ(bytes[3], 0x00); // cmd = 0x00
+            return 0;
+        }));
 
     struct mxt_information_block info = {};
     int ret = mxt_load_config(&dev, &info);
     EXPECT_EQ(ret, 0);
+}
+
+/**
+ * @brief Test that mxt_report_data returns 0 immediately when FIFO is empty
+ */
+TEST_F(MaxTouchTest, ReportDataReturnsZeroOnEmptyFifo) {
+    data.t5_message_processor_address = 0x0159;
+    data.t5_max_message_size = 11;
+    data.t44_message_count_address = 0x0158;
+
+    uint8_t mock_t44_t5[12] = {0};
+    mock_t44_t5[0] = 0;    // count = 0
+    mock_t44_t5[1] = 0xFF; // rpt_id = 0xFF (no message)
+
+    struct mxt_message mock_t5 = {0};
+    mock_t5.report_id = 0xFF;
+
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, sizeof(mock_t44_t5)))
+        .WillOnce(::testing::Invoke([&mock_t44_t5](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            memcpy(read_buf, mock_t44_t5, sizeof(mock_t44_t5));
+            return 0;
+        }));
+
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 11))
+        .WillOnce(::testing::Invoke([&mock_t5](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            memcpy(read_buf, &mock_t5, 11);
+            return 0;
+        }));
+
+    int processed = mxt_report_data(&dev);
+    EXPECT_EQ(processed, 0);
 }
 
 #if !defined(__ZEPHYR__)
