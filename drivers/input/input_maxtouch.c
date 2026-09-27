@@ -454,6 +454,20 @@ static int mxt_load_config(const struct device *dev,
             t100_modified = true;
         }
 
+        // Enable touch events (DOWN, UP, MOVE, SUP, UNSUP) and X/Y vector coordinate reporting
+        if (t100_conf.tcheventcfg != 0x1F) {
+            t100_conf.tcheventcfg = 0x1F;
+            t100_modified = true;
+        }
+        if (t100_conf.tchaux != 0x01) {
+            t100_conf.tchaux = 0x01;
+            t100_modified = true;
+        }
+        if (config->max_touch_points > 0 && t100_conf.numtch < config->max_touch_points) {
+            t100_conf.numtch = config->max_touch_points;
+            t100_modified = true;
+        }
+
         // Apply axis configuration from device tree
         if (config->swap_xy && !(t100_conf.cfg1 & MXT_T100_CFG_SWITCHXY)) {
             t100_conf.cfg1 |= MXT_T100_CFG_SWITCHXY;
