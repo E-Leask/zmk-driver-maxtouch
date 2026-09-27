@@ -140,14 +140,20 @@ static void mxt_proc_message(const struct device *dev, const struct mxt_message 
                 data->finger_active[finger_idx] = true;
                 data->prev_x[finger_idx] = x_pos;
                 data->prev_y[finger_idx] = y_pos;
-            } else if (ev == MOVE && data->finger_active[finger_idx]) {
-                int16_t dx = (int16_t)x_pos - data->prev_x[finger_idx];
-                int16_t dy = (int16_t)y_pos - data->prev_y[finger_idx];
-                data->prev_x[finger_idx] = x_pos;
-                data->prev_y[finger_idx] = y_pos;
-                if (dx != 0 || dy != 0) {
-                    input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
-                    input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
+            } else if (ev == MOVE) {
+                if (!data->finger_active[finger_idx]) {
+                    data->finger_active[finger_idx] = true;
+                    data->prev_x[finger_idx] = x_pos;
+                    data->prev_y[finger_idx] = y_pos;
+                } else {
+                    int16_t dx = (int16_t)x_pos - data->prev_x[finger_idx];
+                    int16_t dy = (int16_t)y_pos - data->prev_y[finger_idx];
+                    data->prev_x[finger_idx] = x_pos;
+                    data->prev_y[finger_idx] = y_pos;
+                    if (dx != 0 || dy != 0) {
+                        input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
+                        input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
+                    }
                 }
             } else if (ev == UP) {
                 data->finger_active[finger_idx] = false;
@@ -307,9 +313,11 @@ static void mxt_work_cb(struct k_work *work) {
 
     LOG_INF("mxt_work_cb triggered, CHG pin level=%d", gpio_pin_get_dt(&config->chg));
 
+    int total_processed = 0;
     int retries = 50;
     while (--retries > 0) {
         int processed = mxt_report_data(data->dev);
+        total_processed += processed;
         if (processed == 0) {
             break;
         }
@@ -318,7 +326,7 @@ static void mxt_work_cb(struct k_work *work) {
         }
     }
 
-    if (gpio_pin_get_dt(&config->chg) == 1) {
+    if (total_processed > 0 && gpio_pin_get_dt(&config->chg) == 1) {
         LOG_DBG("CHG line still asserted after work, re-queuing work");
         k_work_submit(&data->work);
     }
@@ -496,15 +504,19 @@ static int mxt_load_config(const struct device *dev,
                     data->t18_comms_config_address, t18_conf.ctrl, t18_conf.cmd,
                     mode, mode ? "Mode 1 (level)" : "Mode 0 (edge)", retrigen);
 
-            // Mode 1: level-triggered CHG pin (bit 0 = 1).
-            // RETRIGEN: retrigger pulse for edge-triggered host GPIO (bit 6 = 1).
-            t18_conf.ctrl = MXT_T18_CTRL_RETRIGEN | 0x01;
-            ret = mxt_seq_write(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
-            if (ret < 0) {
-                LOG_ERR("Failed to set T18 COMMSCONFIG: %d", ret);
-                return ret;
+            // Mode 0 (ctrl=0x00, edge-triggered, RETRIGEN=0) ensures CHG asserts ONLY
+            // when new messages are added to the T5 FIFO, preventing empty-FIFO interrupt storms.
+            if (t18_conf.ctrl != 0x00) {
+                t18_conf.ctrl = 0x00;
+                ret = mxt_seq_write(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
+                if (ret < 0) {
+                    LOG_ERR("Failed to set T18 COMMSCONFIG: %d", ret);
+                    return ret;
+                }
+                LOG_INF("Configured T18 COMMSCONFIG to 0x00 (Mode 0 / edge)");
+            } else {
+                LOG_INF("Preserving factory T18 COMMSCONFIG Mode 0 (0x00)");
             }
-            LOG_INF("Configured T18 COMMSCONFIG to 0x%02x (Mode 1 / RETRIGEN)", t18_conf.ctrl);
 
             struct mxt_spt_commsconfig_t18 t18_verify = {0};
             ret = mxt_seq_read(dev, data->t18_comms_config_address, &t18_verify, sizeof(t18_verify));
@@ -570,16 +582,45 @@ static int mxt_load_config(const struct device *dev,
             return ret;
         }
 
+        LOG_HEXDUMP_INF(&t100_conf, t100_len, "Raw Factory T100");
         LOG_INF("Factory T100 (size %d): ctrl=0x%02x, cfg1=0x%02x, scraux=0x%02x, tchaux=0x%02x, "
-                "tchevt=0x%02x, gain=%d, tchthr=%d, xrange=%d, yrange=%d",
+                "tchevt=0x%02x, akscfg=0x%02x, numtch=%d, xycfg=0x%02x, gain=%d, tchthr=%d, xrange=%d, yrange=%d",
                 t100_len, t100_conf.ctrl, t100_conf.cfg1, t100_conf.scraux, t100_conf.tchaux,
-                t100_conf.tcheventcfg, t100_conf.gain, t100_conf.tchthr,
+                t100_conf.tcheventcfg, t100_conf.akscfg, t100_conf.numtch, t100_conf.xycfg,
+                t100_conf.gain, t100_conf.tchthr,
                 sys_le16_to_cpu(t100_conf.xrange), sys_le16_to_cpu(t100_conf.yrange));
 
-        // Ensure touch scanning, report generation, and object enable are active
         bool t100_modified = false;
+
+        // Ensure touch scanning, report generation, and object enable are active
         if ((t100_conf.ctrl & 0x83) != 0x83) {
             t100_conf.ctrl |= (MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_SCANEN);
+            t100_modified = true;
+        }
+
+        // Configure maximum number of touch points to report (default 2 contacts for DualSense trackpad)
+        uint8_t desired_numtch = (config->max_touch_points > 0) ? config->max_touch_points : 2;
+        if (t100_conf.numtch != desired_numtch) {
+            LOG_INF("Setting T100 numtch: %d -> %d", t100_conf.numtch, desired_numtch);
+            t100_conf.numtch = desired_numtch;
+            t100_modified = true;
+        }
+
+        // Enable touch event reporting (DOWN, MOVE, UP).
+        // In factory NVRAM, tcheventcfg is 0x00 which disables all touch event generation into T5 FIFO.
+        // Setting 0x07 enables bit 0 (DOWN), bit 1 (MOVE), bit 2 (UP).
+        if (t100_conf.tcheventcfg == 0x00) {
+            LOG_INF("Enabling T100 touch events (tcheventcfg: 0x00 -> 0x07)");
+            t100_conf.tcheventcfg = 0x07;
+            t100_modified = true;
+        }
+
+        // Enable vector (X, Y) reporting in touch auxiliary configuration.
+        // MXT_T100_TCHAUX_VECT (BIT 0 = 0x01) ensures X/Y coordinates are sent with touch messages.
+        if ((t100_conf.tchaux & 0x01) == 0) {
+            LOG_INF("Enabling T100 vector coordinates (tchaux: 0x%02x -> 0x%02x)",
+                    t100_conf.tchaux, t100_conf.tchaux | 0x01);
+            t100_conf.tchaux |= 0x01;
             t100_modified = true;
         }
 
@@ -607,8 +648,10 @@ static int mxt_load_config(const struct device *dev,
             struct mxt_touch_multiscreen_t100 t100_verify = {0};
             ret = mxt_seq_read(dev, data->t100_multiple_touch_touchscreen_address, &t100_verify, t100_len);
             if (ret == 0) {
-                LOG_INF("Verified T100 in chip SRAM: ctrl=0x%02x, cfg1=0x%02x, tchevt=0x%02x, tchaux=0x%02x, tchthr=%d",
-                        t100_verify.ctrl, t100_verify.cfg1, t100_verify.tcheventcfg, t100_verify.tchaux, t100_verify.tchthr);
+                LOG_INF("Verified T100 in chip SRAM: ctrl=0x%02x, cfg1=0x%02x, tchevt=0x%02x, "
+                        "tchaux=0x%02x, numtch=%d, tchthr=%d",
+                        t100_verify.ctrl, t100_verify.cfg1, t100_verify.tcheventcfg,
+                        t100_verify.tchaux, t100_verify.numtch, t100_verify.tchthr);
             }
         } else {
             LOG_INF("Preserving factory T100 touch configuration");
