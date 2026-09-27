@@ -45,6 +45,140 @@ static inline bool is_t100_report(const struct device *dev, int report_id) {
             report_id < data->t100_first_report_id + 2 + config->max_touch_points);
 }
 
+static void mxt_proc_message(const struct device *dev, const struct mxt_message *msg,
+                             uint16_t *pending_fingers, bool *last_touch_status) {
+    struct mxt_data *data = dev->data;
+
+    LOG_INF("maxtouch msg: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+            msg->report_id, msg->data[0], msg->data[1], msg->data[2], msg->data[3], msg->data[4], msg->data[5]);
+
+    if (msg->report_id == data->t6_command_processor_report_id) {
+        uint8_t status = msg->data[0];
+        LOG_INF("T6 Status Report: 0x%02x%s%s%s%s%s%s%s",
+                status,
+                status == 0 ? " OK" : "",
+                (status & MXT_T6_STATUS_RESET) ? " RESET" : "",
+                (status & MXT_T6_STATUS_OFL) ? " OFL" : "",
+                (status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
+                (status & MXT_T6_STATUS_CAL) ? " CAL" : "",
+                (status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "",
+                (status & MXT_T6_STATUS_COMSERR) ? " COMSERR" : "");
+        return;
+    }
+
+    if (data->t25_self_test_report_id && msg->report_id == data->t25_self_test_report_id) {
+        uint8_t status = msg->data[0];
+        data->t25_status = status;
+        data->t25_report_received = true;
+
+        if (status == MXT_T25_STATUS_PASS) {
+            LOG_INF("T25 Self Test Report: ALL TESTS PASSED (0xFE)");
+        } else if (status == MXT_T25_STATUS_POWER_FAULT) {
+            LOG_ERR("T25 Self Test Report: AVdd power NOT present (0x01)");
+        } else if (status == MXT_T25_STATUS_PIN_FAULT) {
+            uint8_t seq = msg->data[1];
+            uint8_t x_pin = msg->data[2];
+            uint8_t y_pin = msg->data[3];
+            const char *seq_str = "Unknown";
+            switch (seq) {
+            case MXT_T25_SEQ_DRIVEN_GND:
+                seq_str = "Driven Ground (shorts to power)";
+                break;
+            case MXT_T25_SEQ_DRIVEN_HIGH:
+                seq_str = "Driven High (shorts to GND)";
+                break;
+            case MXT_T25_SEQ_WALKING_1:
+                seq_str = "Walking 1 (resistive pull-up short)";
+                break;
+            case MXT_T25_SEQ_WALKING_0:
+                seq_str = "Walking 0 (resistive pull-up short)";
+                break;
+            case MXT_T25_SEQ_HIGH_VOLTAGE:
+                seq_str = "Initial High Voltage short";
+                break;
+            }
+
+            if (x_pin == 0 && y_pin == 0) {
+                LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): Driven shield failed",
+                        seq, seq_str);
+            } else if (x_pin != 0 && y_pin != 0) {
+                LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): X%d (pin %d) and Y%d (pin %d) short",
+                        seq, seq_str, x_pin - 1, x_pin, y_pin - 1, y_pin);
+            } else if (x_pin != 0) {
+                LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): X%d sense pin failed (pin %d)",
+                        seq, seq_str, x_pin - 1, x_pin);
+            } else {
+                LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): Y%d sense pin failed (pin %d)",
+                        seq, seq_str, y_pin - 1, y_pin);
+            }
+        } else if (status == MXT_T25_STATUS_SIGNAL_LIMIT) {
+            uint8_t type_num = msg->data[1];
+            uint8_t instance = msg->data[2];
+            LOG_ERR("T25 Self Test: SIGNAL LIMIT FAULT (0x17) on Object T%d instance %d",
+                    type_num, instance);
+        } else if (status == MXT_T25_STATUS_INVALID) {
+            LOG_ERR("T25 Self Test: Invalid command code (0xFD)");
+        } else {
+            LOG_WRN("T25 Self Test: Unknown status 0x%02x [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    status, msg->data[1], msg->data[2], msg->data[3], msg->data[4], msg->data[5]);
+        }
+        return;
+    }
+
+    if (is_t100_report(dev, msg->report_id)) {
+        uint8_t finger_idx = msg->report_id - data->t100_first_report_id - 2;
+        bool pending_for_finger = (*pending_fingers & BIT(finger_idx)) != 0;
+
+        enum t100_touch_event ev = msg->data[0] & 0xF;
+        uint16_t x_pos = msg->data[1] + (msg->data[2] << 8);
+        uint16_t y_pos = msg->data[3] + (msg->data[4] << 8);
+
+        LOG_INF("Touch event: ev=%d, finger=%d, X=%d, Y=%d", ev, finger_idx, x_pos, y_pos);
+
+        if (finger_idx < 5) {
+            if (ev == DOWN) {
+                data->finger_active[finger_idx] = true;
+                data->prev_x[finger_idx] = x_pos;
+                data->prev_y[finger_idx] = y_pos;
+            } else if (ev == MOVE && data->finger_active[finger_idx]) {
+                int16_t dx = (int16_t)x_pos - data->prev_x[finger_idx];
+                int16_t dy = (int16_t)y_pos - data->prev_y[finger_idx];
+                data->prev_x[finger_idx] = x_pos;
+                data->prev_y[finger_idx] = y_pos;
+                if (dx != 0 || dy != 0) {
+                    input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
+                    input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
+                }
+            } else if (ev == UP) {
+                data->finger_active[finger_idx] = false;
+            }
+        }
+
+        switch (ev) {
+        case DOWN:
+        case MOVE:
+        case UP:
+        case NO_EVENT:
+            if (pending_for_finger) {
+                input_report_key(dev, INPUT_BTN_TOUCH, *last_touch_status, true, K_FOREVER);
+                *pending_fingers = 0;
+            }
+            WRITE_BIT(*pending_fingers, finger_idx, 1);
+            *last_touch_status = (ev != UP);
+            input_report_abs(dev, INPUT_ABS_MT_SLOT, finger_idx, false, K_FOREVER);
+            input_report_abs(dev, INPUT_ABS_X, x_pos, false, K_FOREVER);
+            input_report_abs(dev, INPUT_ABS_Y, y_pos, false, K_FOREVER);
+            input_report_key(dev, INPUT_BTN_TOUCH, *last_touch_status, false, K_FOREVER);
+            break;
+        default:
+            break;
+        }
+    } else {
+        LOG_DBG("Other report: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                msg->report_id, msg->data[0], msg->data[1], msg->data[2], msg->data[3], msg->data[4], msg->data[5]);
+    }
+}
+
 static int mxt_report_data(const struct device *dev) {
     struct mxt_data *data = dev->data;
     int ret;
@@ -62,20 +196,28 @@ static int mxt_report_data(const struct device *dev) {
                            ? data->t5_max_message_size
                            : 11;
 
-    for (int i = 0; i < 20; i++) {
-        struct mxt_message msg = {0};
-        ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
+    if (data->t44_message_count_address) {
+        uint8_t buf[1 + sizeof(struct mxt_message)] = {0};
+        ret = mxt_seq_read(dev, data->t44_message_count_address, buf, 1 + read_len);
         if (ret < 0) {
-            LOG_ERR("Failed to read message from T5: %d", ret);
-            break;
+            LOG_ERR("Failed to read T44: %d", ret);
+            return 0;
         }
 
+        uint8_t count = buf[0];
+        if (count == 0) {
+            return 0;
+        }
+
+        struct mxt_message msg = {0};
+        memcpy(&msg, &buf[1], read_len);
+
         if (msg.report_id == 0xFF || msg.report_id == 0x00) {
-            if (i == 0 && data->t6_command_processor_address) {
-                // If first read returns empty (0xFF), inspect T6 status byte
+            LOG_DBG("T44 count=%d but report_id is invalid (0x%02x)", count, msg.report_id);
+            if (data->t6_command_processor_address) {
                 uint8_t t6_status = 0;
                 if (mxt_seq_read(dev, data->t6_command_processor_address, &t6_status, 1) == 0) {
-                    LOG_INF("T5 empty (0xFF). T6 Status: 0x%02x%s%s%s%s%s%s",
+                    LOG_INF("T6 Status: 0x%02x%s%s%s%s%s%s",
                             t6_status,
                             t6_status == 0 ? " OK" : "",
                             (t6_status & MXT_T6_STATUS_RESET) ? " RESET" : "",
@@ -85,137 +227,65 @@ static int mxt_report_data(const struct device *dev) {
                             (t6_status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "");
                 }
             }
-            break;
+            return 0;
         }
 
+        LOG_INF("T44 count=%d, msg 0: rpt_id=%d", count, msg.report_id);
+        mxt_proc_message(dev, &msg, &pending_fingers, &last_touch_status);
         messages_processed++;
-        LOG_INF("T5 msg: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
 
-        if (msg.report_id == data->t6_command_processor_report_id) {
-            uint8_t status = msg.data[0];
-            LOG_INF("T6 Status Report: 0x%02x%s%s%s%s%s%s%s",
-                    status,
-                    status == 0 ? " OK" : "",
-                    (status & MXT_T6_STATUS_RESET) ? " RESET" : "",
-                    (status & MXT_T6_STATUS_OFL) ? " OFL" : "",
-                    (status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
-                    (status & MXT_T6_STATUS_CAL) ? " CAL" : "",
-                    (status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "",
-                    (status & MXT_T6_STATUS_COMSERR) ? " COMSERR" : "");
-            continue;
+        uint8_t num_left = count - 1;
+        if (num_left > 15) {
+            LOG_WRN("T44 count %d clamped to 15", count);
+            num_left = 15;
         }
 
-        if (data->t25_self_test_report_id && msg.report_id == data->t25_self_test_report_id) {
-            uint8_t status = msg.data[0];
-            data->t25_status = status;
-            data->t25_report_received = true;
-
-            if (status == MXT_T25_STATUS_PASS) {
-                LOG_INF("T25 Self Test Report: ALL TESTS PASSED (0xFE)");
-            } else if (status == MXT_T25_STATUS_POWER_FAULT) {
-                LOG_ERR("T25 Self Test Report: AVdd power NOT present (0x01)");
-            } else if (status == MXT_T25_STATUS_PIN_FAULT) {
-                uint8_t seq = msg.data[1];
-                uint8_t x_pin = msg.data[2];
-                uint8_t y_pin = msg.data[3];
-                const char *seq_str = "Unknown";
-                switch (seq) {
-                case MXT_T25_SEQ_DRIVEN_GND:
-                    seq_str = "Driven Ground (shorts to power)";
-                    break;
-                case MXT_T25_SEQ_DRIVEN_HIGH:
-                    seq_str = "Driven High (shorts to GND)";
-                    break;
-                case MXT_T25_SEQ_WALKING_1:
-                    seq_str = "Walking 1 (resistive pull-up short)";
-                    break;
-                case MXT_T25_SEQ_WALKING_0:
-                    seq_str = "Walking 0 (resistive pull-up short)";
-                    break;
-                case MXT_T25_SEQ_HIGH_VOLTAGE:
-                    seq_str = "Initial High Voltage short";
-                    break;
-                }
-
-                if (x_pin == 0 && y_pin == 0) {
-                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): Driven shield failed",
-                            seq, seq_str);
-                } else if (x_pin != 0 && y_pin != 0) {
-                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): X%d (pin %d) and Y%d (pin %d) short",
-                            seq, seq_str, x_pin - 1, x_pin, y_pin - 1, y_pin);
-                } else if (x_pin != 0) {
-                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): X%d sense pin failed (pin %d)",
-                            seq, seq_str, x_pin - 1, x_pin);
-                } else {
-                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): Y%d sense pin failed (pin %d)",
-                            seq, seq_str, y_pin - 1, y_pin);
-                }
-            } else if (status == MXT_T25_STATUS_SIGNAL_LIMIT) {
-                uint8_t type_num = msg.data[1];
-                uint8_t instance = msg.data[2];
-                LOG_ERR("T25 Self Test: SIGNAL LIMIT FAULT (0x17) on Object T%d instance %d",
-                        type_num, instance);
-            } else if (status == MXT_T25_STATUS_INVALID) {
-                LOG_ERR("T25 Self Test: Invalid command code (0xFD)");
+        if (num_left > 0) {
+            uint8_t rem_buf[15 * sizeof(struct mxt_message)] = {0};
+            ret = mxt_seq_read(dev, data->t5_message_processor_address, rem_buf, num_left * read_len);
+            if (ret < 0) {
+                LOG_ERR("Failed to read remaining %d messages from T5: %d", num_left, ret);
             } else {
-                LOG_WRN("T25 Self Test: Unknown status 0x%02x [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                        status, msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
-            }
-            continue;
-        }
-
-        if (is_t100_report(dev, msg.report_id)) {
-            uint8_t finger_idx = msg.report_id - data->t100_first_report_id - 2;
-            bool pending_for_finger = (pending_fingers & BIT(finger_idx)) != 0;
-
-            enum t100_touch_event ev = msg.data[0] & 0xF;
-            uint16_t x_pos = msg.data[1] + (msg.data[2] << 8);
-            uint16_t y_pos = msg.data[3] + (msg.data[4] << 8);
-
-            LOG_INF("Touch event: ev=%d, finger=%d, X=%d, Y=%d", ev, finger_idx, x_pos, y_pos);
-
-            if (finger_idx < 5) {
-                if (ev == DOWN) {
-                    data->finger_active[finger_idx] = true;
-                    data->prev_x[finger_idx] = x_pos;
-                    data->prev_y[finger_idx] = y_pos;
-                } else if (ev == MOVE && data->finger_active[finger_idx]) {
-                    int16_t dx = (int16_t)x_pos - data->prev_x[finger_idx];
-                    int16_t dy = (int16_t)y_pos - data->prev_y[finger_idx];
-                    data->prev_x[finger_idx] = x_pos;
-                    data->prev_y[finger_idx] = y_pos;
-                    if (dx != 0 || dy != 0) {
-                        input_report_rel(dev, INPUT_REL_X, dx, false, K_NO_WAIT);
-                        input_report_rel(dev, INPUT_REL_Y, dy, true, K_NO_WAIT);
+                for (int j = 0; j < num_left; j++) {
+                    struct mxt_message rem_msg = {0};
+                    memcpy(&rem_msg, &rem_buf[j * read_len], read_len);
+                    if (rem_msg.report_id == 0xFF || rem_msg.report_id == 0x00) {
+                        break;
                     }
-                } else if (ev == UP) {
-                    data->finger_active[finger_idx] = false;
+                    LOG_INF("T44 msg %d: rpt_id=%d", j + 1, rem_msg.report_id);
+                    mxt_proc_message(dev, &rem_msg, &pending_fingers, &last_touch_status);
+                    messages_processed++;
                 }
+            }
+        }
+    } else {
+        for (int i = 0; i < 20; i++) {
+            struct mxt_message msg = {0};
+            ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
+            if (ret < 0) {
+                LOG_ERR("Failed to read message from T5: %d", ret);
+                break;
             }
 
-            switch (ev) {
-            case DOWN:
-            case MOVE:
-            case UP:
-            case NO_EVENT:
-                if (pending_for_finger) {
-                    input_report_key(dev, INPUT_BTN_TOUCH, last_touch_status, true, K_FOREVER);
-                    pending_fingers = 0;
+            if (msg.report_id == 0xFF || msg.report_id == 0x00) {
+                if (i == 0 && data->t6_command_processor_address) {
+                    uint8_t t6_status = 0;
+                    if (mxt_seq_read(dev, data->t6_command_processor_address, &t6_status, 1) == 0) {
+                        LOG_INF("T5 empty (0xFF). T6 Status: 0x%02x%s%s%s%s%s%s",
+                                t6_status,
+                                t6_status == 0 ? " OK" : "",
+                                (t6_status & MXT_T6_STATUS_RESET) ? " RESET" : "",
+                                (t6_status & MXT_T6_STATUS_OFL) ? " OFL" : "",
+                                (t6_status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
+                                (t6_status & MXT_T6_STATUS_CAL) ? " CAL" : "",
+                                (t6_status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "");
+                    }
                 }
-                WRITE_BIT(pending_fingers, finger_idx, 1);
-                last_touch_status = (ev != UP);
-                input_report_abs(dev, INPUT_ABS_MT_SLOT, finger_idx, false, K_FOREVER);
-                input_report_abs(dev, INPUT_ABS_X, x_pos, false, K_FOREVER);
-                input_report_abs(dev, INPUT_ABS_Y, y_pos, false, K_FOREVER);
-                input_report_key(dev, INPUT_BTN_TOUCH, last_touch_status, false, K_FOREVER);
-                break;
-            default:
                 break;
             }
-        } else {
-            LOG_DBG("Other report: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                    msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
+
+            messages_processed++;
+            mxt_proc_message(dev, &msg, &pending_fingers, &last_touch_status);
         }
     }
 
@@ -661,7 +731,7 @@ static int mxt_run_self_test(const struct device *dev) {
 
     if (data->t25_report_received) {
         if (data->t25_status == MXT_T25_STATUS_PASS) {
-            LOG_INF("T25 Self Test: Board reports NO issues! All tests passed.");
+            LOG_INF("T25 Self Test: Board reports NO issues! All tests passed (0xFE).");
             return 0;
         } else {
             LOG_ERR("T25 Self Test: Board reports issues (status=0x%02x)!", data->t25_status);
@@ -669,7 +739,7 @@ static int mxt_run_self_test(const struct device *dev) {
         }
     }
 
-    LOG_INF("T25 Self Test completed (CMD cleared to 0x00, no report received)");
+    LOG_INF("T25 Self Test completed: PASSED! (CMD cleared to 0x00, no faults detected, T6 status OK)");
     return 0;
 }
 

@@ -270,6 +270,51 @@ TEST_F(MaxTouchTest, ReportDataReturnsZeroOnEmptyFifo) {
     EXPECT_EQ(processed, 0);
 }
 
+/**
+ * @brief Test that mxt_report_data returns 0 when T44 reports count == 0
+ */
+TEST_F(MaxTouchTest, ReportDataReturnsZeroOnT44CountZero) {
+    data.t44_message_count_address = 0x0158;
+    data.t5_message_processor_address = 0x0159;
+    data.t5_max_message_size = 11;
+
+    // Expect read of 12 bytes (1 byte count + 11 bytes message) starting at T44
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 12))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            uint8_t *buf = static_cast<uint8_t*>(read_buf);
+            memset(buf, 0, 12);
+            buf[0] = 0; // count = 0 (empty FIFO)
+            return 0;
+        }));
+
+    int processed = mxt_report_data(&dev);
+    EXPECT_EQ(processed, 0);
+}
+
+/**
+ * @brief Test that mxt_report_data reads and processes a message through T44
+ */
+TEST_F(MaxTouchTest, ReportDataProcessesMessageThroughT44) {
+    data.t44_message_count_address = 0x0158;
+    data.t5_message_processor_address = 0x0159;
+    data.t5_max_message_size = 11;
+    data.t6_command_processor_report_id = 1;
+
+    // Expect read of 12 bytes starting at T44: count=1, report_id=1 (T6 status OK)
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 12))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            uint8_t *buf = static_cast<uint8_t*>(read_buf);
+            memset(buf, 0, 12);
+            buf[0] = 1; // count = 1
+            buf[1] = 1; // report_id = 1 (t6_command_processor_report_id)
+            buf[2] = 0; // status = OK
+            return 0;
+        }));
+
+    int processed = mxt_report_data(&dev);
+    EXPECT_EQ(processed, 1);
+}
+
 #if !defined(__ZEPHYR__)
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
