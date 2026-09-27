@@ -5,6 +5,7 @@
 #include <zephyr/device.h>
 
 #define GPIO_INPUT 0
+#define GPIO_PULL_UP (1U << 4)
 #define GPIO_INT_EDGE_TO_ACTIVE 0
 
 #ifdef __cplusplus

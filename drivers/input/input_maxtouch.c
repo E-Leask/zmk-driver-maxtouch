@@ -196,6 +196,11 @@ static void mxt_work_cb(struct k_work *work) {
             break;
         }
     }
+
+    if (gpio_pin_get_dt(&config->chg) == 1) {
+        LOG_DBG("CHG line still asserted after work, re-queuing work");
+        k_work_submit(&data->work);
+    }
 }
 
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
@@ -529,7 +534,7 @@ static int mxt_init(const struct device *dev) {
         return -EIO;
     }
 
-    gpio_pin_configure_dt(&config->chg, GPIO_INPUT);
+    gpio_pin_configure_dt(&config->chg, GPIO_INPUT | GPIO_PULL_UP);
     gpio_init_callback(&data->gpio_cb, mxt_gpio_cb, BIT(config->chg.pin));
     ret = gpio_add_callback(config->chg.port, &data->gpio_cb);
     if (ret < 0) {
@@ -563,17 +568,31 @@ static int mxt_init(const struct device *dev) {
         return -EIO;
     }
 
-    // Give calibration 100ms to complete, then drain all messages until CHG is released or queue is empty
-    k_msleep(100);
-    int drain_retries = 50;
-    while (--drain_retries > 0) {
-        int processed = mxt_report_data(dev);
-        if (processed == 0 || gpio_pin_get_dt(&config->chg) == 0) {
-            break;
+    if (data->t6_command_processor_address) {
+        // Calibration typically takes ~160-250ms.
+        // Wait for calibration to finish and poll-drain until the chip completes calibration
+        // and releases the CHG line (logic 0 = physically HIGH / idle).
+        int cal_wait_ms = 400;
+        while (cal_wait_ms > 0) {
+            k_msleep(20);
+            cal_wait_ms -= 20;
+
+            int processed = mxt_report_data(dev);
+
+            // If calibration completed (we processed message(s) or waited at least 200ms)
+            // AND the CHG line has returned to idle (0):
+            if (gpio_pin_get_dt(&config->chg) == 0 && (processed > 0 || cal_wait_ms <= 200)) {
+                break;
+            }
         }
     }
 
     LOG_INF("CHG pin logical level after calibration & drain: %d", gpio_pin_get_dt(&config->chg));
+
+    if (gpio_pin_get_dt(&config->chg) != 0) {
+        LOG_WRN("CHG pin still asserted after init (%d), queuing work", gpio_pin_get_dt(&config->chg));
+        k_work_submit(&data->work);
+    }
 
     return 0;
 }
