@@ -34,6 +34,7 @@ struct mxt_data {
     uint16_t t100_size;
 
     uint8_t t25_status;
+    uint8_t t25_size;
     bool t25_report_received;
 
     int16_t prev_x[5];

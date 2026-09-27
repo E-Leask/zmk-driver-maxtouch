@@ -312,6 +312,7 @@ static int mxt_load_object_table(const struct device *dev, struct mxt_informatio
         case 25:
             data->t25_self_test_address = addr;
             data->t25_self_test_report_id = report_id;
+            data->t25_size = obj_table.size_minus_one + 1;
             break;
         case 37:
             data->t37_diagnostic_debug_address = addr;
@@ -576,45 +577,53 @@ static int mxt_run_self_test(const struct device *dev) {
         return 0;
     }
 
-    LOG_INF("Starting T25 Self Test at 0x%04x (report_id=%d)...",
-            data->t25_self_test_address, data->t25_self_test_report_id);
+    LOG_INF("Starting T25 Self Test at 0x%04x (size=%d, report_id=%d)...",
+            data->t25_self_test_address, data->t25_size, data->t25_self_test_report_id);
 
-    // 1. Ensure T25 is enabled and reporting is enabled (CTRL: ENABLE=bit 0, RPTEN=bit 1)
-    uint8_t ctrl = 0;
-    ret = mxt_seq_read(dev, data->t25_self_test_address, &ctrl, 1);
-    if (ret < 0) {
-        LOG_ERR("Failed to read T25 CTRL: %d", ret);
+    // 1. Read and log existing T25 object configuration
+    uint8_t t25_raw[16] = {0};
+    uint8_t read_sz = (data->t25_size > 0 && data->t25_size <= sizeof(t25_raw)) ? data->t25_size : sizeof(t25_raw);
+    ret = mxt_seq_read(dev, data->t25_self_test_address, t25_raw, read_sz);
+    if (ret == 0) {
+        LOG_INF("T25 raw config (%d bytes): [%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x]",
+                read_sz,
+                t25_raw[0], t25_raw[1], t25_raw[2], t25_raw[3],
+                t25_raw[4], t25_raw[5], t25_raw[6], t25_raw[7],
+                t25_raw[8], t25_raw[9], t25_raw[10], t25_raw[11],
+                t25_raw[12], t25_raw[13], t25_raw[14], t25_raw[15]);
+        uint16_t upsig = t25_raw[2] | (t25_raw[3] << 8);
+        uint16_t losig = t25_raw[4] | (t25_raw[5] << 8);
+        uint16_t sigrange = t25_raw[7] | (t25_raw[8] << 8);
+        LOG_INF("T25 parsed: ctrl=0x%02x, cmd=0x%02x, upsiglim=%u, losiglim=%u, pindwell=%u, sigrange=%u, pinthr=%u",
+                t25_raw[0], t25_raw[1], upsig, losig, t25_raw[6], sigrange, t25_raw[9]);
+    } else {
+        LOG_ERR("Failed to read T25 configuration: %d", ret);
         return ret;
-    }
-
-    if ((ctrl & (MXT_T25_CTRL_ENABLE | MXT_T25_CTRL_RPTEN)) != (MXT_T25_CTRL_ENABLE | MXT_T25_CTRL_RPTEN)) {
-        ctrl |= (MXT_T25_CTRL_ENABLE | MXT_T25_CTRL_RPTEN);
-        ret = mxt_seq_write(dev, data->t25_self_test_address, &ctrl, 1);
-        if (ret < 0) {
-            LOG_ERR("Failed to enable T25 CTRL: %d", ret);
-            return ret;
-        }
-        LOG_INF("Enabled T25 (CTRL=0x%02x)", ctrl);
     }
 
     data->t25_report_received = false;
     data->t25_status = 0;
 
-    // 2. Trigger all tests with 0xFE (MXT_T25_TEST_ALL)
-    uint16_t cmd_addr = data->t25_self_test_address + 1;
-    uint8_t cmd = MXT_T25_TEST_ALL;
-    ret = mxt_seq_write(dev, cmd_addr, &cmd, 1);
+    // 2. Ensure T25 is enabled and reporting enabled, and trigger CMD 0xFE (all tests)
+    // Write both CTRL (byte 0) and CMD (byte 1) starting at the T25 base address
+    uint8_t ctrl = t25_raw[0] | MXT_T25_CTRL_ENABLE | MXT_T25_CTRL_RPTEN;
+    uint8_t trigger_buf[2] = { ctrl, MXT_T25_TEST_ALL };
+
+    ret = mxt_seq_write(dev, data->t25_self_test_address, trigger_buf, sizeof(trigger_buf));
     if (ret < 0) {
-        LOG_ERR("Failed to write T25 CMD 0x%02x: %d", cmd, ret);
+        LOG_ERR("Failed to write T25 trigger command: %d", ret);
         return ret;
     }
 
-    LOG_INF("Triggered T25 Self Test (CMD=0x%02x: All Tests), waiting for completion...", cmd);
+    // Immediate readback to check if command was accepted
+    uint8_t readback[2] = {0};
+    mxt_seq_read(dev, data->t25_self_test_address, readback, sizeof(readback));
+    LOG_INF("T25 trigger written (ctrl=0x%02x, cmd=0x%02x) -> immediate readback: ctrl=0x%02x, cmd=0x%02x",
+            trigger_buf[0], trigger_buf[1], readback[0], readback[1]);
 
     // 3. Poll for test completion and drain T5 messages
-    // The test runs immediately and CMD is set to 0x00 when finished.
-    // Also, if reporting is enabled, T25 generates a message in T5.
-    int timeout_ms = 500;
+    int timeout_ms = 800;
+    int cmd_cleared_wait_count = 0;
     bool completed = false;
 
     while (timeout_ms > 0) {
@@ -631,17 +640,21 @@ static int mxt_run_self_test(const struct device *dev) {
 
         // Check if CMD field has been cleared back to 0x00
         uint8_t cur_cmd = 0xFF;
-        ret = mxt_seq_read(dev, cmd_addr, &cur_cmd, 1);
+        ret = mxt_seq_read(dev, data->t25_self_test_address + 1, &cur_cmd, 1);
         if (ret == 0 && cur_cmd == 0x00) {
-            // Test finished according to CMD register. Give a moment for T5 message if not yet drained.
-            k_msleep(10);
-            mxt_report_data(dev);
-            completed = true;
-            break;
+            cmd_cleared_wait_count++;
+            if (cmd_cleared_wait_count == 1) {
+                LOG_INF("T25 CMD cleared to 0x00, waiting for T5 report message...");
+            }
+            // Allow up to 260ms (13 checks x 20ms) after CMD cleared for T5 message delivery
+            if (cmd_cleared_wait_count >= 13) {
+                completed = true;
+                break;
+            }
         }
     }
 
-    if (!completed) {
+    if (!completed && !data->t25_report_received) {
         LOG_WRN("T25 Self Test timed out waiting for completion");
         return -ETIMEDOUT;
     }
@@ -656,7 +669,7 @@ static int mxt_run_self_test(const struct device *dev) {
         }
     }
 
-    LOG_INF("T25 Self Test completed (CMD cleared, no report received)");
+    LOG_INF("T25 Self Test completed (CMD cleared to 0x00, no report received)");
     return 0;
 }
 
