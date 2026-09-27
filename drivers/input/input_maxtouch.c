@@ -106,6 +106,65 @@ static int mxt_report_data(const struct device *dev) {
             continue;
         }
 
+        if (data->t25_self_test_report_id && msg.report_id == data->t25_self_test_report_id) {
+            uint8_t status = msg.data[0];
+            data->t25_status = status;
+            data->t25_report_received = true;
+
+            if (status == MXT_T25_STATUS_PASS) {
+                LOG_INF("T25 Self Test Report: ALL TESTS PASSED (0xFE)");
+            } else if (status == MXT_T25_STATUS_POWER_FAULT) {
+                LOG_ERR("T25 Self Test Report: AVdd power NOT present (0x01)");
+            } else if (status == MXT_T25_STATUS_PIN_FAULT) {
+                uint8_t seq = msg.data[1];
+                uint8_t x_pin = msg.data[2];
+                uint8_t y_pin = msg.data[3];
+                const char *seq_str = "Unknown";
+                switch (seq) {
+                case MXT_T25_SEQ_DRIVEN_GND:
+                    seq_str = "Driven Ground (shorts to power)";
+                    break;
+                case MXT_T25_SEQ_DRIVEN_HIGH:
+                    seq_str = "Driven High (shorts to GND)";
+                    break;
+                case MXT_T25_SEQ_WALKING_1:
+                    seq_str = "Walking 1 (resistive pull-up short)";
+                    break;
+                case MXT_T25_SEQ_WALKING_0:
+                    seq_str = "Walking 0 (resistive pull-up short)";
+                    break;
+                case MXT_T25_SEQ_HIGH_VOLTAGE:
+                    seq_str = "Initial High Voltage short";
+                    break;
+                }
+
+                if (x_pin == 0 && y_pin == 0) {
+                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): Driven shield failed",
+                            seq, seq_str);
+                } else if (x_pin != 0 && y_pin != 0) {
+                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): X%d (pin %d) and Y%d (pin %d) short",
+                            seq, seq_str, x_pin - 1, x_pin, y_pin - 1, y_pin);
+                } else if (x_pin != 0) {
+                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): X%d sense pin failed (pin %d)",
+                            seq, seq_str, x_pin - 1, x_pin);
+                } else {
+                    LOG_ERR("T25 Self Test: PIN FAULT (seq=0x%02x [%s]): Y%d sense pin failed (pin %d)",
+                            seq, seq_str, y_pin - 1, y_pin);
+                }
+            } else if (status == MXT_T25_STATUS_SIGNAL_LIMIT) {
+                uint8_t type_num = msg.data[1];
+                uint8_t instance = msg.data[2];
+                LOG_ERR("T25 Self Test: SIGNAL LIMIT FAULT (0x17) on Object T%d instance %d",
+                        type_num, instance);
+            } else if (status == MXT_T25_STATUS_INVALID) {
+                LOG_ERR("T25 Self Test: Invalid command code (0xFD)");
+            } else {
+                LOG_WRN("T25 Self Test: Unknown status 0x%02x [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                        status, msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
+            }
+            continue;
+        }
+
         if (is_t100_report(dev, msg.report_id)) {
             uint8_t finger_idx = msg.report_id - data->t100_first_report_id - 2;
             bool pending_for_finger = (pending_fingers & BIT(finger_idx)) != 0;
@@ -508,6 +567,99 @@ static int mxt_load_config(const struct device *dev,
     return 0;
 }
 
+static int mxt_run_self_test(const struct device *dev) {
+    struct mxt_data *data = dev->data;
+    int ret;
+
+    if (!data->t25_self_test_address) {
+        LOG_INF("T25 Self Test object not found on device, skipping self test");
+        return 0;
+    }
+
+    LOG_INF("Starting T25 Self Test at 0x%04x (report_id=%d)...",
+            data->t25_self_test_address, data->t25_self_test_report_id);
+
+    // 1. Ensure T25 is enabled and reporting is enabled (CTRL: ENABLE=bit 0, RPTEN=bit 1)
+    uint8_t ctrl = 0;
+    ret = mxt_seq_read(dev, data->t25_self_test_address, &ctrl, 1);
+    if (ret < 0) {
+        LOG_ERR("Failed to read T25 CTRL: %d", ret);
+        return ret;
+    }
+
+    if ((ctrl & (MXT_T25_CTRL_ENABLE | MXT_T25_CTRL_RPTEN)) != (MXT_T25_CTRL_ENABLE | MXT_T25_CTRL_RPTEN)) {
+        ctrl |= (MXT_T25_CTRL_ENABLE | MXT_T25_CTRL_RPTEN);
+        ret = mxt_seq_write(dev, data->t25_self_test_address, &ctrl, 1);
+        if (ret < 0) {
+            LOG_ERR("Failed to enable T25 CTRL: %d", ret);
+            return ret;
+        }
+        LOG_INF("Enabled T25 (CTRL=0x%02x)", ctrl);
+    }
+
+    data->t25_report_received = false;
+    data->t25_status = 0;
+
+    // 2. Trigger all tests with 0xFE (MXT_T25_TEST_ALL)
+    uint16_t cmd_addr = data->t25_self_test_address + 1;
+    uint8_t cmd = MXT_T25_TEST_ALL;
+    ret = mxt_seq_write(dev, cmd_addr, &cmd, 1);
+    if (ret < 0) {
+        LOG_ERR("Failed to write T25 CMD 0x%02x: %d", cmd, ret);
+        return ret;
+    }
+
+    LOG_INF("Triggered T25 Self Test (CMD=0x%02x: All Tests), waiting for completion...", cmd);
+
+    // 3. Poll for test completion and drain T5 messages
+    // The test runs immediately and CMD is set to 0x00 when finished.
+    // Also, if reporting is enabled, T25 generates a message in T5.
+    int timeout_ms = 500;
+    bool completed = false;
+
+    while (timeout_ms > 0) {
+        k_msleep(20);
+        timeout_ms -= 20;
+
+        // Drain any messages from T5 (this will parse T25 report if ready)
+        mxt_report_data(dev);
+
+        if (data->t25_report_received) {
+            completed = true;
+            break;
+        }
+
+        // Check if CMD field has been cleared back to 0x00
+        uint8_t cur_cmd = 0xFF;
+        ret = mxt_seq_read(dev, cmd_addr, &cur_cmd, 1);
+        if (ret == 0 && cur_cmd == 0x00) {
+            // Test finished according to CMD register. Give a moment for T5 message if not yet drained.
+            k_msleep(10);
+            mxt_report_data(dev);
+            completed = true;
+            break;
+        }
+    }
+
+    if (!completed) {
+        LOG_WRN("T25 Self Test timed out waiting for completion");
+        return -ETIMEDOUT;
+    }
+
+    if (data->t25_report_received) {
+        if (data->t25_status == MXT_T25_STATUS_PASS) {
+            LOG_INF("T25 Self Test: Board reports NO issues! All tests passed.");
+            return 0;
+        } else {
+            LOG_ERR("T25 Self Test: Board reports issues (status=0x%02x)!", data->t25_status);
+            return -EIO;
+        }
+    }
+
+    LOG_INF("T25 Self Test completed (CMD cleared, no report received)");
+    return 0;
+}
+
 static int mxt_init(const struct device *dev) {
     struct mxt_data *data = dev->data;
     const struct mxt_config *config = dev->config;
@@ -582,6 +734,11 @@ static int mxt_init(const struct device *dev) {
     }
 
     LOG_INF("CHG pin logical level after calibration & drain: %d", gpio_pin_get_dt(&config->chg));
+
+    ret = mxt_run_self_test(dev);
+    if (ret < 0) {
+        LOG_WRN("T25 self test did not pass or reported error: %d", ret);
+    }
 
     if (gpio_pin_get_dt(&config->chg) != 0) {
         LOG_WRN("CHG pin still asserted after init (%d), queuing work", gpio_pin_get_dt(&config->chg));

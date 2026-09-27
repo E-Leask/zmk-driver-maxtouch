@@ -33,6 +33,9 @@ struct mxt_data {
     uint16_t t100_first_report_id;
     uint16_t t100_size;
 
+    uint8_t t25_status;
+    bool t25_report_received;
+
     int16_t prev_x[5];
     int16_t prev_y[5];
     bool finger_active[5];
@@ -196,13 +199,26 @@ struct mxt_spt_selftest_t25 {
     uint8_t sesiglimits[3];
 } __packed;
 
+#define MXT_T25_CTRL_ENABLE         0x01
+#define MXT_T25_CTRL_RPTEN          0x02
+
 #define MXT_T25_TEST_FINISHED       0x00
 #define MXT_T25_TEST_POWER          0x01
 #define MXT_T25_TEST_PIN_FAULT      0x12
 #define MXT_T25_TEST_SIGNAL_LIMIT   0x17
 #define MXT_T25_TEST_ALL            0xFE
-#define MXT_T25_TEST_INVALID        0xFD
-#define MXT_T25_TEST_PASSED         0xFE
+
+#define MXT_T25_STATUS_POWER_FAULT  0x01
+#define MXT_T25_STATUS_PIN_FAULT    0x12
+#define MXT_T25_STATUS_SIGNAL_LIMIT 0x17
+#define MXT_T25_STATUS_INVALID      0xFD
+#define MXT_T25_STATUS_PASS         0xFE
+
+#define MXT_T25_SEQ_DRIVEN_GND      0x01
+#define MXT_T25_SEQ_DRIVEN_HIGH     0x02
+#define MXT_T25_SEQ_WALKING_1       0x03
+#define MXT_T25_SEQ_WALKING_0       0x04
+#define MXT_T25_SEQ_HIGH_VOLTAGE    0x07
 
 struct mxt_proci_touchsupression_t42 {
     uint8_t ctrl;
