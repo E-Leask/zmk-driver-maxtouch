@@ -205,58 +205,59 @@ static int mxt_report_data(const struct device *dev) {
         }
 
         uint8_t count = buf[0];
-        if (count == 0) {
-            return 0;
-        }
-
         struct mxt_message msg = {0};
         memcpy(&msg, &buf[1], read_len);
 
-        if (msg.report_id == 0xFF || msg.report_id == 0x00) {
-            LOG_DBG("T44 count=%d but report_id is invalid (0x%02x)", count, msg.report_id);
-            if (data->t6_command_processor_address) {
-                uint8_t t6_status = 0;
-                if (mxt_seq_read(dev, data->t6_command_processor_address, &t6_status, 1) == 0) {
-                    LOG_INF("T6 Status: 0x%02x%s%s%s%s%s%s",
-                            t6_status,
-                            t6_status == 0 ? " OK" : "",
-                            (t6_status & MXT_T6_STATUS_RESET) ? " RESET" : "",
-                            (t6_status & MXT_T6_STATUS_OFL) ? " OFL" : "",
-                            (t6_status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
-                            (t6_status & MXT_T6_STATUS_CAL) ? " CAL" : "",
-                            (t6_status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "");
+        LOG_INF("T44 read (12B from 0x%04x): count=%d, rpt_id=%d [%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x]",
+                data->t44_message_count_address, count, msg.report_id,
+                buf[0], buf[1], buf[2], buf[3], buf[4], buf[5],
+                buf[6], buf[7], buf[8], buf[9], buf[10], buf[11]);
+
+        if (count == 0 || msg.report_id == 0xFF || msg.report_id == 0x00) {
+            // If T44 combined read returned no valid message, try reading T5 directly as fallback
+            struct mxt_message t5_direct = {0};
+            int t5_ret = mxt_seq_read(dev, data->t5_message_processor_address, &t5_direct, read_len);
+            LOG_INF("T5 direct fallback (0x%04x): ret=%d, rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    data->t5_message_processor_address, t5_ret, t5_direct.report_id,
+                    t5_direct.data[0], t5_direct.data[1], t5_direct.data[2],
+                    t5_direct.data[3], t5_direct.data[4], t5_direct.data[5]);
+
+            if (t5_ret == 0 && t5_direct.report_id != 0xFF && t5_direct.report_id != 0x00) {
+                msg = t5_direct;
+            } else {
+                if (data->t6_command_processor_address) {
+                    uint8_t t6_status = 0;
+                    if (mxt_seq_read(dev, data->t6_command_processor_address, &t6_status, 1) == 0) {
+                        LOG_INF("FIFO empty. T6 Status: 0x%02x%s%s%s%s%s%s",
+                                t6_status,
+                                t6_status == 0 ? " OK" : "",
+                                (t6_status & MXT_T6_STATUS_RESET) ? " RESET" : "",
+                                (t6_status & MXT_T6_STATUS_OFL) ? " OFL" : "",
+                                (t6_status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
+                                (t6_status & MXT_T6_STATUS_CAL) ? " CAL" : "",
+                                (t6_status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "");
+                    }
                 }
+                return 0;
             }
-            return 0;
         }
 
-        LOG_INF("T44 count=%d, msg 0: rpt_id=%d", count, msg.report_id);
+        LOG_INF("Processing message 0: rpt_id=%d", msg.report_id);
         mxt_proc_message(dev, &msg, &pending_fingers, &last_touch_status);
         messages_processed++;
 
-        uint8_t num_left = count - 1;
-        if (num_left > 15) {
-            LOG_WRN("T44 count %d clamped to 15", count);
-            num_left = 15;
-        }
-
-        if (num_left > 0) {
-            uint8_t rem_buf[15 * sizeof(struct mxt_message)] = {0};
-            ret = mxt_seq_read(dev, data->t5_message_processor_address, rem_buf, num_left * read_len);
-            if (ret < 0) {
-                LOG_ERR("Failed to read remaining %d messages from T5: %d", num_left, ret);
-            } else {
-                for (int j = 0; j < num_left; j++) {
-                    struct mxt_message rem_msg = {0};
-                    memcpy(&rem_msg, &rem_buf[j * read_len], read_len);
-                    if (rem_msg.report_id == 0xFF || rem_msg.report_id == 0x00) {
-                        break;
-                    }
-                    LOG_INF("T44 msg %d: rpt_id=%d", j + 1, rem_msg.report_id);
-                    mxt_proc_message(dev, &rem_msg, &pending_fingers, &last_touch_status);
-                    messages_processed++;
-                }
+        // Drain any remaining messages from T5
+        for (int m = 0; m < 15; m++) {
+            struct mxt_message rem_msg = {0};
+            ret = mxt_seq_read(dev, data->t5_message_processor_address, &rem_msg, read_len);
+            if (ret < 0 || rem_msg.report_id == 0xFF || rem_msg.report_id == 0x00) {
+                break;
             }
+            LOG_INF("Drain T5 msg %d: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    m + 1, rem_msg.report_id, rem_msg.data[0], rem_msg.data[1], rem_msg.data[2],
+                    rem_msg.data[3], rem_msg.data[4], rem_msg.data[5]);
+            mxt_proc_message(dev, &rem_msg, &pending_fingers, &last_touch_status);
+            messages_processed++;
         }
     } else {
         for (int i = 0; i < 20; i++) {
@@ -266,6 +267,10 @@ static int mxt_report_data(const struct device *dev) {
                 LOG_ERR("Failed to read message from T5: %d", ret);
                 break;
             }
+
+            LOG_INF("T5 fallback read %d: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    i, msg.report_id, msg.data[0], msg.data[1], msg.data[2],
+                    msg.data[3], msg.data[4], msg.data[5]);
 
             if (msg.report_id == 0xFF || msg.report_id == 0x00) {
                 if (i == 0 && data->t6_command_processor_address) {
