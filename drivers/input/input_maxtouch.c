@@ -89,7 +89,7 @@ static int mxt_report_data(const struct device *dev) {
         return 0; // FIFO is empty
     }
 
-    int total_messages = (msg_count > 0) ? msg_count : 1;
+    int total_messages = (msg_count > 0) ? msg_count : 20;
     int messages_processed = 0;
     for (int i = 0; i < total_messages; i++) {
         if (i > 0) {
@@ -170,6 +170,9 @@ static int mxt_report_data(const struct device *dev) {
             default:
                 break;
             }
+        } else {
+            LOG_DBG("Other report: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
         }
     }
 
@@ -374,14 +377,15 @@ static int mxt_load_config(const struct device *dev,
                     data->t18_comms_config_address, t18_conf.ctrl, t18_conf.cmd,
                     mode, mode ? "Mode 1 (level)" : "Mode 0 (edge)", retrigen);
 
-            // 0x44: RETRIGEN enabled (bit 6) + retrigger stability / level trigger (bit 2)
-            t18_conf.ctrl = 0x44;
+            // Mode 1: level-triggered CHG pin (bit 0 = 1).
+            // RETRIGEN: retrigger pulse for edge-triggered host GPIO (bit 6 = 1).
+            t18_conf.ctrl = MXT_T18_CTRL_RETRIGEN | 0x01;
             ret = mxt_seq_write(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
             if (ret < 0) {
                 LOG_ERR("Failed to set T18 COMMSCONFIG: %d", ret);
                 return ret;
             }
-            LOG_INF("Configured T18 COMMSCONFIG to 0x44 (Mode 1 / RETRIGEN)");
+            LOG_INF("Configured T18 COMMSCONFIG to 0x%02x (Mode 1 / RETRIGEN)", t18_conf.ctrl);
         }
     }
 

@@ -222,13 +222,13 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndConfigureT18) {
             return 0;
         }));
 
-    // Expect write to T18 configuring 0x44 (size is 2 bytes data + 2 bytes addr = 4 bytes)
+    // Expect write to T18 configuring 0x41 (size is 2 bytes data + 2 bytes addr = 4 bytes)
     EXPECT_CALL(mock_i2c, write_dt(&config.bus, ::testing::_, sizeof(struct mxt_spt_commsconfig_t18) + 2))
         .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void *buf, size_t num_bytes) {
             const uint8_t *bytes = static_cast<const uint8_t*>(buf);
             EXPECT_EQ(bytes[0], 0xAE);
             EXPECT_EQ(bytes[1], 0x04);
-            EXPECT_EQ(bytes[2], 0x44); // ctrl = 0x44
+            EXPECT_EQ(bytes[2], 0x41); // ctrl = 0x41 (Mode 1 / RETRIGEN)
             EXPECT_EQ(bytes[3], 0x00); // cmd = 0x00
             return 0;
         }));
