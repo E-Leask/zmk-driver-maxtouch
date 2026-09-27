@@ -57,56 +57,40 @@ static int mxt_report_data(const struct device *dev) {
     uint16_t pending_fingers = 0;
     bool last_touch_status = false;
 
-    uint8_t t44_buf[12] = {0};
-    uint8_t msg_count = 0;
-    struct mxt_message msg = {0};
-
-    if (data->t44_message_count_address) {
-        ret = mxt_seq_read(dev, data->t44_message_count_address, t44_buf, sizeof(t44_buf));
-        if (ret == 0) {
-            msg_count = t44_buf[0];
-            msg.report_id = t44_buf[1];
-            memcpy(msg.data, &t44_buf[2], sizeof(msg.data) < 10 ? sizeof(msg.data) : 10);
-
-            LOG_INF("T44+T5 burst read: count=%d, rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                    msg_count, msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
-        }
-    }
-
-    if (msg_count == 0 && (msg.report_id == 0xFF || msg.report_id == 0x00)) {
-        // Fallback: read directly from T5
-        uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(msg))
-                               ? data->t5_max_message_size
-                               : 11;
-        ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
-        if (ret == 0) {
-            LOG_INF("T5 direct read: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                    msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
-        }
-    }
-
-    if (msg_count == 0 && (msg.report_id == 0xFF || msg.report_id == 0x00)) {
-        return 0; // FIFO is empty
-    }
-
-    int total_messages = (msg_count > 0) ? msg_count : 20;
     int messages_processed = 0;
-    for (int i = 0; i < total_messages; i++) {
-        if (i > 0) {
-            uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(msg))
-                                   ? data->t5_max_message_size
-                                   : 11;
-            ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
-            if (ret < 0) {
-                break;
-            }
+    uint8_t read_len = (data->t5_max_message_size > 0 && data->t5_max_message_size <= sizeof(struct mxt_message))
+                           ? data->t5_max_message_size
+                           : 11;
+
+    for (int i = 0; i < 20; i++) {
+        struct mxt_message msg = {0};
+        ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
+        if (ret < 0) {
+            LOG_ERR("Failed to read message from T5: %d", ret);
+            break;
         }
 
         if (msg.report_id == 0xFF || msg.report_id == 0x00) {
+            if (i == 0 && data->t6_command_processor_address) {
+                // If first read returns empty (0xFF), inspect T6 status byte
+                uint8_t t6_status = 0;
+                if (mxt_seq_read(dev, data->t6_command_processor_address, &t6_status, 1) == 0) {
+                    LOG_INF("T5 empty (0xFF). T6 Status: 0x%02x%s%s%s%s%s%s",
+                            t6_status,
+                            t6_status == 0 ? " OK" : "",
+                            (t6_status & MXT_T6_STATUS_RESET) ? " RESET" : "",
+                            (t6_status & MXT_T6_STATUS_OFL) ? " OFL" : "",
+                            (t6_status & MXT_T6_STATUS_SIGERR) ? " SIGERR" : "",
+                            (t6_status & MXT_T6_STATUS_CAL) ? " CAL" : "",
+                            (t6_status & MXT_T6_STATUS_CFGERR) ? " CFGERR" : "");
+                }
+            }
             break;
         }
 
         messages_processed++;
+        LOG_INF("T5 msg: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                msg.report_id, msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[4], msg.data[5]);
 
         if (msg.report_id == data->t6_command_processor_report_id) {
             uint8_t status = msg.data[0];
@@ -386,6 +370,12 @@ static int mxt_load_config(const struct device *dev,
                 return ret;
             }
             LOG_INF("Configured T18 COMMSCONFIG to 0x%02x (Mode 1 / RETRIGEN)", t18_conf.ctrl);
+
+            struct mxt_spt_commsconfig_t18 t18_verify = {0};
+            ret = mxt_seq_read(dev, data->t18_comms_config_address, &t18_verify, sizeof(t18_verify));
+            if (ret == 0) {
+                LOG_INF("Verified T18 in chip SRAM: ctrl=0x%02x, cmd=0x%02x", t18_verify.ctrl, t18_verify.cmd);
+            }
         }
     }
 
@@ -458,21 +448,7 @@ static int mxt_load_config(const struct device *dev,
             t100_modified = true;
         }
 
-        // Enable touch events (DOWN, UP, MOVE, SUP, UNSUP) and X/Y vector coordinate reporting
-        if (t100_conf.tcheventcfg != 0x1F) {
-            t100_conf.tcheventcfg = 0x1F;
-            t100_modified = true;
-        }
-        if (t100_conf.tchaux != 0x01) {
-            t100_conf.tchaux = 0x01;
-            t100_modified = true;
-        }
-        if (config->max_touch_points > 0 && t100_conf.numtch < config->max_touch_points) {
-            t100_conf.numtch = config->max_touch_points;
-            t100_modified = true;
-        }
-
-        // Apply axis configuration from device tree
+        // Apply axis configuration from device tree if configured
         if (config->swap_xy && !(t100_conf.cfg1 & MXT_T100_CFG_SWITCHXY)) {
             t100_conf.cfg1 |= MXT_T100_CFG_SWITCHXY;
             t100_modified = true;

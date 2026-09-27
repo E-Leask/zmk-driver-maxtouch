@@ -217,7 +217,8 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndConfigureT18) {
         }));
 
     EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, sizeof(struct mxt_spt_commsconfig_t18)))
-        .WillOnce(::testing::Invoke([&mock_t18](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+        .Times(2)
+        .WillRepeatedly(::testing::Invoke([&mock_t18](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
             memcpy(read_buf, &mock_t18, sizeof(mock_t18));
             return 0;
         }));
@@ -244,24 +245,24 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndConfigureT18) {
 TEST_F(MaxTouchTest, ReportDataReturnsZeroOnEmptyFifo) {
     data.t5_message_processor_address = 0x0159;
     data.t5_max_message_size = 11;
-    data.t44_message_count_address = 0x0158;
-
-    uint8_t mock_t44_t5[12] = {0};
-    mock_t44_t5[0] = 0;    // count = 0
-    mock_t44_t5[1] = 0xFF; // rpt_id = 0xFF (no message)
+    data.t6_command_processor_address = 0x02D7;
 
     struct mxt_message mock_t5 = {0};
-    mock_t5.report_id = 0xFF;
+    mock_t5.report_id = 0xFF; // rpt_id = 0xFF (no message)
 
-    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, sizeof(mock_t44_t5)))
-        .WillOnce(::testing::Invoke([&mock_t44_t5](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
-            memcpy(read_buf, mock_t44_t5, sizeof(mock_t44_t5));
-            return 0;
-        }));
+    uint8_t mock_t6_status = 0x00;
 
+    // Expect direct read from T5
     EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 11))
         .WillOnce(::testing::Invoke([&mock_t5](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
             memcpy(read_buf, &mock_t5, 11);
+            return 0;
+        }));
+
+    // Expect T6 status inspection when T5 is empty
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 1))
+        .WillOnce(::testing::Invoke([&mock_t6_status](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            memcpy(read_buf, &mock_t6_status, 1);
             return 0;
         }));
 
