@@ -453,6 +453,10 @@ struct mxt_touch_multiscreen_t100 {
 #define MXT_T100_CFG_ATCHTHRSEL    BIT(3)
 #define MXT_T100_CFG_RPTEACHCYCLE  BIT(0)
 
+#define MXT_T100_DETECT            BIT(7)
+#define MXT_T100_TYPE_MASK         0x70
+#define MXT_T100_EVENT_MASK        0x0F
+
 // Touch events reported in the t100 messages
 enum t100_touch_event {
     NO_EVENT,
