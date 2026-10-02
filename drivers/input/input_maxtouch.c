@@ -429,7 +429,7 @@ static int mxt_load_config(const struct device *dev) {
         ret = mxt_seq_read(dev, data->t7_powerconfig_address, &t7_conf, sizeof(t7_conf));
         if (ret == 0) {
             LOG_INF("Factory T7 Power: idleacqint=%d, actacqint=%d, actv2idleto=%d, cfg=0x%02x, cfg2=0x%02x",
-                    t7_conf.idleacqint, t7_conf.actacqint, t7_conf.actv2idleto, t7_conf.cfg), t7_conf.cfg2;
+                    t7_conf.idleacqint, t7_conf.actacqint, t7_conf.actv2idleto, t7_conf.cfg, t7_conf.cfg2);
 
             if (config->has_t7_config) {
                 if (config->idle_acq_time > 0) {
@@ -763,7 +763,7 @@ static int mxt_init(const struct device *dev) {
     }
     LOG_INF("CONFIGURE GPIO-------------------------------------------");
 
-    gpio_pin_configure_dt(&config->chg, GPIO_INPUT | GPIO_PULL_UP);
+    gpio_pin_configure_dt(&config->chg, GPIO_INPUT);
     gpio_init_callback(&data->gpio_cb, mxt_gpio_cb, BIT(config->chg.pin));
     ret = gpio_add_callback(config->chg.port, &data->gpio_cb);
     if (ret < 0) {
