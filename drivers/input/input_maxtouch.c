@@ -179,6 +179,27 @@ static void mxt_proc_message(const struct device *dev, const struct mxt_message 
     }
 }
 
+static int mxt_report_data_2(const struct device *dev) {
+    struct mxt_data *data = dev->data;
+    int ret;
+    if (!data->t5_message_processor_address) {
+        LOG_WRN("No T5 message processor object found!");
+        return 0;
+    }
+
+    if (data->t44_message_count_address) {
+    uint8_t buf[1] = {0};
+    ret = mxt_seq_read(dev, data->t44_message_count_address, buf, 1);
+    if (ret < 0) {
+        LOG_ERR("Failed to read T44: %d", ret);
+        return 0;
+    }
+    LOG_INF("Messages available = %d", buf[0]);
+    }
+
+    return 1;
+}
+
 static int mxt_report_data(const struct device *dev) {
     struct mxt_data *data = dev->data;
     int ret;
@@ -283,6 +304,14 @@ static int mxt_report_data(const struct device *dev) {
     }
 
     return messages_processed;
+}
+
+static void mxt_work_cb_2(struct k_work *work) {
+    struct mxt_data *data = CONTAINER_OF(work, struct mxt_data, work);
+    const struct mxt_config *config = data->dev->config;
+
+    int processed = mxt_report_data_2(data->dev);
+
 }
 
 static void mxt_work_cb(struct k_work *work) {
@@ -772,7 +801,7 @@ static int mxt_init(const struct device *dev) {
     }
 
     LOG_INF("INIT WORK QUEUE-----------------------------------------");
-    k_work_init(&data->work, mxt_work_cb);
+    k_work_init(&data->work, mxt_work_cb_2);
 
     LOG_INF("CONFIGURE INTERRUPT---------------------------------------");
     ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_EDGE_TO_ACTIVE);
