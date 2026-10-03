@@ -201,7 +201,7 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndConfigureT18) {
     mock_t8.chrgtime = 15;
 
     struct mxt_spt_commsconfig_t18 mock_t18 = {};
-    mock_t18.ctrl = 0x41; // Non-zero (e.g. Mode 1 / RETRIGEN), so driver restores to 0x00
+    mock_t18.ctrl = 0x00; // Mode 0 / edge, so driver configures to 0x01 (Mode 1 / level)
     mock_t18.cmd = 0x00;
 
     EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, sizeof(struct mxt_gen_powerconfig_t7)))
@@ -223,13 +223,13 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndConfigureT18) {
             return 0;
         }));
 
-    // Expect write to T18 configuring 0x00 (size is 2 bytes data + 2 bytes addr = 4 bytes)
+    // Expect write to T18 configuring 0x01 (size is 2 bytes data + 2 bytes addr = 4 bytes)
     EXPECT_CALL(mock_i2c, write_dt(&config.bus, ::testing::_, sizeof(struct mxt_spt_commsconfig_t18) + 2))
         .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void *buf, size_t num_bytes) {
             const uint8_t *bytes = static_cast<const uint8_t*>(buf);
             EXPECT_EQ(bytes[0], 0xAE);
             EXPECT_EQ(bytes[1], 0x04);
-            EXPECT_EQ(bytes[2], 0x00); // ctrl = 0x00 (Mode 0 / edge)
+            EXPECT_EQ(bytes[2], 0x01); // ctrl = 0x01 (Mode 1 / level)
             EXPECT_EQ(bytes[3], 0x00); // cmd = 0x00
             return 0;
         }));

@@ -333,14 +333,24 @@ static void mxt_work_cb(struct k_work *work) {
         }
     }
 
-    if (total_processed > 0 && gpio_pin_get_dt(&config->chg) == 1) {
+    if (gpio_pin_get_dt(&config->chg) == 1) {
         LOG_DBG("CHG line still asserted after work, re-queuing work");
         k_work_submit(&data->work);
+    } else {
+        // CHG line has returned to idle (0). Re-enable the level-active interrupt.
+        gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
+        // If line asserted again while re-enabling, disable interrupt and re-queue work to prevent storm
+        if (gpio_pin_get_dt(&config->chg) == 1) {
+            gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
+            k_work_submit(&data->work);
+        }
     }
 }
 
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
     struct mxt_data *data = CONTAINER_OF(cb, struct mxt_data, gpio_cb);
+    const struct mxt_config *config = data->dev->config;
+    gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
     LOG_DBG("CHG interrupt triggered!");
     k_work_submit(&data->work);
 }
@@ -505,7 +515,7 @@ static int mxt_load_config(const struct device *dev) {
         }
     }
 
-    // Configure Communications Configuration (T18) for Mode 1 with RETRIGEN
+    // Configure Communications Configuration (T18) for Mode 1 (level-triggered)
     if (data->t18_comms_config_address) {
         struct mxt_spt_commsconfig_t18 t18_conf = {0};
         ret = mxt_seq_read(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
@@ -516,18 +526,18 @@ static int mxt_load_config(const struct device *dev) {
                     data->t18_comms_config_address, t18_conf.ctrl, t18_conf.cmd,
                     mode, mode ? "Mode 1 (level)" : "Mode 0 (edge)", retrigen);
 
-            // Mode 0 (ctrl=0x00, edge-triggered, RETRIGEN=0) ensures CHG asserts ONLY
-            // when new messages are added to the T5 FIFO, preventing empty-FIFO interrupt storms.
-            if (t18_conf.ctrl != 0x00) {
-                t18_conf.ctrl = 0x00;
+            // Mode 1 (ctrl=0x01, level-triggered, RETRIGEN=0) ensures CHG remains asserted (low)
+            // as long as there are messages waiting in the T5 message processor FIFO.
+            if (t18_conf.ctrl != 0x01) {
+                t18_conf.ctrl = 0x01;
                 ret = mxt_seq_write(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
                 if (ret < 0) {
                     LOG_ERR("Failed to set T18 COMMSCONFIG: %d", ret);
                     return ret;
                 }
-                LOG_INF("Configured T18 COMMSCONFIG to 0x00 (Mode 0 / edge)");
+                LOG_INF("Configured T18 COMMSCONFIG to 0x01 (Mode 1 / level)");
             } else {
-                LOG_INF("Preserving factory T18 COMMSCONFIG Mode 0 (0x00)");
+                LOG_INF("Preserving factory T18 COMMSCONFIG Mode 1 (0x01)");
             }
 
             struct mxt_spt_commsconfig_t18 t18_verify = {0};
@@ -801,10 +811,10 @@ static int mxt_init(const struct device *dev) {
     }
 
     LOG_INF("INIT WORK QUEUE-----------------------------------------");
-    k_work_init(&data->work, mxt_work_cb_2);
+    k_work_init(&data->work, mxt_work_cb);
 
     LOG_INF("CONFIGURE INTERRUPT---------------------------------------");
-    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_EDGE_TO_ACTIVE);
+    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
     if (ret < 0) {
         LOG_ERR("Failed to configure interrupt for CHG pin %d", ret);
         return -EIO;
@@ -858,6 +868,7 @@ static int mxt_init(const struct device *dev) {
 
     if (gpio_pin_get_dt(&config->chg) != 0) {
         LOG_WRN("CHG pin still asserted after init (%d), queuing work", gpio_pin_get_dt(&config->chg));
+        gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
         k_work_submit(&data->work);
     }
 

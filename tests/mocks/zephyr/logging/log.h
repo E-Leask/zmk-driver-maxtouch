@@ -9,3 +9,4 @@
 #define LOG_INF(...) do {} while (0)
 #define LOG_DBG(...) do {} while (0)
 #define LOG_HEXDUMP_DBG(...) do {} while (0)
+#define LOG_HEXDUMP_INF(...) do {} while (0)
