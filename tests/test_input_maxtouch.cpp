@@ -287,21 +287,12 @@ TEST_F(MaxTouchTest, ReportDataReturnsZeroOnT44CountZero) {
             return 0;
         }));
 
-    // Expect fallback direct read of 11 bytes from T5
-    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 11))
-        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
-            struct mxt_message *msg = static_cast<struct mxt_message*>(read_buf);
-            memset(msg, 0, sizeof(*msg));
-            msg->report_id = 0xFF; // empty FIFO
-            return 0;
-        }));
-
     int processed = mxt_report_data(&dev);
     EXPECT_EQ(processed, 0);
 }
 
 /**
- * @brief Test that mxt_report_data reads and processes a message through T44
+ * @brief Test that mxt_report_data reads and processes a single message through T44 without trailing drain read
  */
 TEST_F(MaxTouchTest, ReportDataProcessesMessageThroughT44) {
     data.t44_message_count_address = 0x0158;
@@ -320,17 +311,41 @@ TEST_F(MaxTouchTest, ReportDataProcessesMessageThroughT44) {
             return 0;
         }));
 
-    // Expect drain read of 11 bytes from T5, returning 0xFF (no more messages)
+    int processed = mxt_report_data(&dev);
+    EXPECT_EQ(processed, 1);
+}
+
+/**
+ * @brief Test that mxt_report_data reads exactly the remaining messages indicated by T44 count
+ */
+TEST_F(MaxTouchTest, ReportDataProcessesMultipleMessagesThroughT44) {
+    data.t44_message_count_address = 0x0158;
+    data.t5_message_processor_address = 0x0159;
+    data.t5_max_message_size = 11;
+    data.t6_command_processor_report_id = 1;
+
+    // 1. First read of 12 bytes from T44: count=2, msg 1 report_id=1
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 12))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            uint8_t *buf = static_cast<uint8_t*>(read_buf);
+            memset(buf, 0, 12);
+            buf[0] = 2; // count = 2
+            buf[1] = 1; // report_id = 1
+            buf[2] = 0; // status = OK
+            return 0;
+        }));
+
+    // 2. Second read of remaining message (count - 1 = 1) directly from T5
     EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 11))
         .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
             struct mxt_message *msg = static_cast<struct mxt_message*>(read_buf);
             memset(msg, 0, sizeof(*msg));
-            msg->report_id = 0xFF; // end of messages
+            msg->report_id = 1; // report_id = 1
             return 0;
         }));
 
     int processed = mxt_report_data(&dev);
-    EXPECT_EQ(processed, 1);
+    EXPECT_EQ(processed, 2);
 }
 
 #if !defined(__ZEPHYR__)

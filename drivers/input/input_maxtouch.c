@@ -210,16 +210,8 @@ static int mxt_report_data(const struct device *dev) {
         memcpy(&msg, &buf[1], read_len);
 
         if (count == 0 || msg.report_id == 0xFF || msg.report_id == 0x00) {
-            // If T44 combined read returned no valid message, try reading T5 directly as fallback
-            struct mxt_message t5_direct = {0};
-            int t5_ret = mxt_seq_read(dev, data->t5_message_processor_address, &t5_direct, read_len);
-
-            if (t5_ret == 0 && t5_direct.report_id != 0xFF && t5_direct.report_id != 0x00) {
-                msg = t5_direct;
-            } else {
-                LOG_DBG("FIFO empty (T44 count=%d, T5 direct rpt_id=%d)", count, t5_direct.report_id);
-                return 0;
-            }
+            LOG_DBG("FIFO empty (T44 count=%d, rpt_id=%d)", count, msg.report_id);
+            return 0;
         }
 
         LOG_INF("T44 read (12B from 0x%04x): count=%d, rpt_id=%d [%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x]",
@@ -230,15 +222,20 @@ static int mxt_report_data(const struct device *dev) {
         mxt_proc_message(dev, &msg, &pending_fingers, &last_touch_status);
         messages_processed++;
 
-        // Drain any remaining messages from T5
-        for (int m = 0; m < 15; m++) {
+        // Read exactly the remaining messages reported by T44 (count - 1)
+        uint8_t num_left = (count > 1) ? (count - 1) : 0;
+        if (num_left > 15) {
+            num_left = 15;
+        }
+
+        for (uint8_t m = 0; m < num_left; m++) {
             struct mxt_message rem_msg = {0};
             ret = mxt_seq_read(dev, data->t5_message_processor_address, &rem_msg, read_len);
             if (ret < 0 || rem_msg.report_id == 0xFF || rem_msg.report_id == 0x00) {
                 break;
             }
-            LOG_INF("Drain T5 msg %d: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
-                    m + 1, rem_msg.report_id, rem_msg.data[0], rem_msg.data[1], rem_msg.data[2],
+            LOG_INF("T5 msg %d/%d: rpt_id=%d [0x%02x 0x%02x 0x%02x 0x%02x 0x%02x 0x%02x]",
+                    m + 2, count, rem_msg.report_id, rem_msg.data[0], rem_msg.data[1], rem_msg.data[2],
                     rem_msg.data[3], rem_msg.data[4], rem_msg.data[5]);
             mxt_proc_message(dev, &rem_msg, &pending_fingers, &last_touch_status);
             messages_processed++;
