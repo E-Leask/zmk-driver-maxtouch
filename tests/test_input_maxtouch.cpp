@@ -240,6 +240,61 @@ TEST_F(MaxTouchTest, PreserveFactoryT7T8AndConfigureT18) {
 }
 
 /**
+ * @brief Test that mxt_load_config enables T100 touch events and vector coordinates when disabled in factory NVRAM
+ */
+TEST_F(MaxTouchTest, ConfiguresT100EventAndVectorReporting) {
+    testing::InSequence seq;
+    const uint8_t t100_len = 62;
+    data.t100_multiple_touch_touchscreen_address = 0x06B4;
+    data.t100_size = t100_len;
+
+    struct mxt_touch_multiscreen_t100 factory_t100 = {};
+    factory_t100.ctrl = 0x8F;
+    factory_t100.cfg1 = 0xF4;
+    factory_t100.scraux = 0x00;
+    factory_t100.tchaux = 0x00;      // vectors disabled in factory
+    factory_t100.tcheventcfg = 0x00; // events disabled in factory
+    factory_t100.numtch = 2;
+    factory_t100.xycfg = 0x88;
+    factory_t100.gain = 20;
+    factory_t100.tchthr = 29;
+
+    // 1. Initial read of factory T100 (62 bytes)
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, t100_len))
+        .WillOnce(::testing::Invoke([&factory_t100](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            memcpy(read_buf, &factory_t100, sizeof(factory_t100));
+            return 0;
+        }));
+
+    // 2. Expect write of updated T100 with tcheventcfg=0x07 and tchaux=0x01 (62 bytes + 2 addr bytes = 64)
+    EXPECT_CALL(mock_i2c, write_dt(&config.bus, ::testing::_, t100_len + 2))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void *buf, size_t num_bytes) {
+            const uint8_t *bytes = static_cast<const uint8_t*>(buf);
+            EXPECT_EQ(bytes[0], 0xB4); // addr LSB (0x06B4)
+            EXPECT_EQ(bytes[1], 0x06); // addr MSB
+            const struct mxt_touch_multiscreen_t100 *written_t100 =
+                reinterpret_cast<const struct mxt_touch_multiscreen_t100*>(&bytes[2]);
+            EXPECT_EQ(written_t100->tcheventcfg, 0x07);
+            EXPECT_EQ(written_t100->tchaux & 0x01, 0x01);
+            return 0;
+        }));
+
+    // 3. Verification read of updated T100 from chip SRAM (62 bytes)
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, t100_len))
+        .WillOnce(::testing::Invoke([&factory_t100](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            struct mxt_touch_multiscreen_t100 verified_t100 = factory_t100;
+            verified_t100.tcheventcfg = 0x07;
+            verified_t100.tchaux |= 0x01;
+            memcpy(read_buf, &verified_t100, sizeof(verified_t100));
+            return 0;
+        }));
+
+    struct mxt_information_block info = {};
+    int ret = mxt_load_config(&dev, &info);
+    EXPECT_EQ(ret, 0);
+}
+
+/**
  * @brief Test that mxt_report_data returns 0 immediately when FIFO is empty
  */
 TEST_F(MaxTouchTest, ReportDataReturnsZeroOnEmptyFifo) {
