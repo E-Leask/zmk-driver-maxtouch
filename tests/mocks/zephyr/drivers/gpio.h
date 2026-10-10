@@ -6,7 +6,9 @@
 
 #define GPIO_INPUT 0
 #define GPIO_PULL_UP (1U << 4)
-#define GPIO_INT_EDGE_TO_ACTIVE 0
+#define GPIO_INT_DISABLE (1U << 0)
+#define GPIO_INT_EDGE_TO_ACTIVE (1U << 1)
+#define GPIO_INT_LEVEL_ACTIVE (1U << 2)
 
 #ifdef __cplusplus
 extern "C" {

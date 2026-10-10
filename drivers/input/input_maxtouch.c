@@ -304,15 +304,22 @@ static void mxt_work_cb(struct k_work *work) {
         }
     }
 
-    if (total_processed > 0 && gpio_pin_get_dt(&config->chg) == 1) {
+    if (gpio_pin_get_dt(&config->chg) == 1) {
         LOG_DBG("CHG line still asserted after work, re-queuing work");
         k_work_submit(&data->work);
+    } else {
+        /* Re-enable level interrupt once CHG line is de-asserted (idle) */
+        gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
     }
 }
 
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
     struct mxt_data *data = CONTAINER_OF(cb, struct mxt_data, gpio_cb);
-    LOG_DBG("CHG interrupt triggered!");
+    const struct mxt_config *config = data->dev->config;
+
+    LOG_DBG("CHG level interrupt triggered!");
+    /* Disable level interrupt to prevent an ISR storm while worker thread drains T5 messages */
+    gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
     k_work_submit(&data->work);
 }
 
@@ -476,7 +483,7 @@ static int mxt_load_config(const struct device *dev) {
         }
     }
 
-    // Configure Communications Configuration (T18) for Mode 1 with RETRIGEN
+    // Configure Communications Configuration (T18) for Mode 1 (level-triggered)
     if (data->t18_comms_config_address) {
         struct mxt_spt_commsconfig_t18 t18_conf = {0};
         ret = mxt_seq_read(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
@@ -487,18 +494,22 @@ static int mxt_load_config(const struct device *dev) {
                     data->t18_comms_config_address, t18_conf.ctrl, t18_conf.cmd,
                     mode, mode ? "Mode 1 (level)" : "Mode 0 (edge)", retrigen);
 
-            // Mode 0 (ctrl=0x00, edge-triggered, RETRIGEN=0) ensures CHG asserts ONLY
-            // when new messages are added to the T5 FIFO, preventing empty-FIFO interrupt storms.
-            if (t18_conf.ctrl != 0x00) {
-                t18_conf.ctrl = 0x00;
+            // Per ATMXT datasheet: "The CHG line remains low as long as there are messages to be read.
+            // The host should be configured so that the CHG line is connected to an interrupt line
+            // that is level-triggered. The host should not use an edge-triggered interrupt as this
+            // means adding extra software precautions."
+            // Mode 1 (ctrl=0x01, level-triggered): CHG remains asserted (low) as long as unread
+            // messages are in the T5 message queue, returning high only when all messages are drained.
+            if (t18_conf.ctrl != 0x01) {
+                t18_conf.ctrl = 0x01;
                 ret = mxt_seq_write(dev, data->t18_comms_config_address, &t18_conf, sizeof(t18_conf));
                 if (ret < 0) {
                     LOG_ERR("Failed to set T18 COMMSCONFIG: %d", ret);
                     return ret;
                 }
-                LOG_INF("Configured T18 COMMSCONFIG to 0x00 (Mode 0 / edge)");
+                LOG_INF("Configured T18 COMMSCONFIG to 0x01 (Mode 1 / level-triggered)");
             } else {
-                LOG_INF("Preserving factory T18 COMMSCONFIG Mode 0 (0x00)");
+                LOG_INF("Preserving factory T18 COMMSCONFIG Mode 1 (0x01)");
             }
 
             struct mxt_spt_commsconfig_t18 t18_verify = {0};
@@ -774,10 +785,10 @@ static int mxt_init(const struct device *dev) {
     LOG_INF("INIT WORK QUEUE-----------------------------------------");
     k_work_init(&data->work, mxt_work_cb);
 
-    LOG_INF("CONFIGURE INTERRUPT---------------------------------------");
-    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_EDGE_TO_ACTIVE);
+    LOG_INF("INIT INTERRUPT (HELD DISABLED UNTIL CONFIG COMPLETE)-----");
+    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
     if (ret < 0) {
-        LOG_ERR("Failed to configure interrupt for CHG pin %d", ret);
+        LOG_ERR("Failed to initialize interrupt for CHG pin %d", ret);
         return -EIO;
     }
 
@@ -827,8 +838,16 @@ static int mxt_init(const struct device *dev) {
         LOG_WRN("T25 self test did not pass or reported error: %d", ret);
     }
 
+    LOG_INF("ENABLE LEVEL INTERRUPT-----------------------------------");
+    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
+    if (ret < 0) {
+        LOG_ERR("Failed to enable level interrupt for CHG pin %d", ret);
+        return -EIO;
+    }
+
     if (gpio_pin_get_dt(&config->chg) != 0) {
         LOG_WRN("CHG pin still asserted after init (%d), queuing work", gpio_pin_get_dt(&config->chg));
+        gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
         k_work_submit(&data->work);
     }
 
