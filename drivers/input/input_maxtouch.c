@@ -305,11 +305,14 @@ static void mxt_work_cb(struct k_work *work) {
         LOG_DBG("CHG line still asserted after work, re-queuing work");
         k_work_submit(&data->work);
     } else {
+#if 0
         /* Re-enable level interrupt once CHG line is de-asserted (idle) */
         gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
+#endif
     }
 }
 
+#if 0
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
     struct mxt_data *data = CONTAINER_OF(cb, struct mxt_data, gpio_cb);
     const struct mxt_config *config = data->dev->config;
@@ -319,6 +322,7 @@ static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uin
     gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
     k_work_submit(&data->work);
 }
+#endif
 
 static int mxt_load_object_table(const struct device *dev, struct mxt_information_block *info) {
     struct mxt_data *data = dev->data;
@@ -806,12 +810,14 @@ static int mxt_init(const struct device *dev) {
     LOG_INF("CONFIGURE GPIO-------------------------------------------");
 
     gpio_pin_configure_dt(&config->chg, GPIO_INPUT);
+#if 0
     gpio_init_callback(&data->gpio_cb, mxt_gpio_cb, BIT(config->chg.pin));
     ret = gpio_add_callback(config->chg.port, &data->gpio_cb);
     if (ret < 0) {
         LOG_ERR("Failed to set DR callback: %d", ret);
         return -EIO;
     }
+#endif
 
     LOG_INF("INIT WORK QUEUE-----------------------------------------");
     k_work_init(&data->work, mxt_work_cb);
@@ -869,6 +875,7 @@ static int mxt_init(const struct device *dev) {
         LOG_WRN("T25 self test did not pass or reported error: %d", ret);
     }
 
+#if 0
     LOG_INF("ENABLE LEVEL INTERRUPT-----------------------------------");
     ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
     if (ret < 0) {
@@ -881,6 +888,7 @@ static int mxt_init(const struct device *dev) {
         gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
         k_work_submit(&data->work);
     }
+#endif
 
     return 0;
 }
