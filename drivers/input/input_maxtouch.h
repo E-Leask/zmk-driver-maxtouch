@@ -23,6 +23,7 @@ struct mxt_data {
     uint16_t t44_message_count_address;
     uint16_t t46_cte_config_address;
     uint16_t t47_proci_stylus_address;
+    uint16_t t51_custom_address;
     uint16_t t56_proci_shieldless_address;
     uint16_t t65_proci_lensbending_address;
     uint16_t t80_proci_retransmissioncompensation_address;
@@ -371,7 +372,7 @@ struct mxt_proci_retransmissioncompensation_t80 {
     uint8_t compstrthr;
     uint8_t compcfg;
     uint8_t moistvldthrsf;
-    uint8_t moistcfg3;
+    uint8_t moistcfg3;q
     unsigned char moistdegthr;
 } __packed;
 

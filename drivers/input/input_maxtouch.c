@@ -397,6 +397,9 @@ static int mxt_load_object_table(const struct device *dev, struct mxt_informatio
         case 47:
             data->t47_proci_stylus_address = addr;
             break;
+        case 51:
+            data->t51_custom_address = addr;
+            break;
         case 56:
             data->t56_proci_shieldless_address = addr;
             break;
@@ -550,6 +553,23 @@ static int mxt_load_config(const struct device *dev) {
             LOG_INF("Factory T46 CTE: xvoltage=%d, syncdelay=%d, activesyncsperx=%d",
                     t46_conf.xvoltage, sys_le16_to_cpu(t46_conf.syncdelay), t46_conf.activesyncsperx);
         }
+    }
+
+    // Unlock T44/T5 FIFO readout if T51 is present (e.g., mXT144U at 0x04F9 + offset 8 = 0x0501)
+    if (data->t51_custom_address) {
+        uint16_t t51_unlock_addr = data->t51_custom_address + 8;
+        uint8_t t51_val = 0;
+        ret = mxt_seq_read(dev, t51_unlock_addr, &t51_val, 1);
+        if (ret == 0) {
+            LOG_INF("Factory T51+8 (0x%04x): 0x%02x", t51_unlock_addr, t51_val);
+        }
+        uint8_t unlock_val = 0xFF;
+        ret = mxt_seq_write(dev, t51_unlock_addr, &unlock_val, 1);
+        if (ret < 0) {
+            LOG_ERR("Failed to write T51+8 (0x%04x): %d", t51_unlock_addr, ret);
+            return ret;
+        }
+        LOG_INF("Unlocked T44/T5 message reporting via T51+8 (0x%04x = 0x%02x)", t51_unlock_addr, unlock_val);
     }
 
     if (data->t80_proci_retransmissioncompensation_address) {
