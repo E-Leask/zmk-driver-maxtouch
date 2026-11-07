@@ -16,7 +16,6 @@ struct mxt_data {
     uint16_t t6_command_processor_address;
     uint16_t t7_powerconfig_address;
     uint16_t t8_acquisitionconfig_address;
-    uint16_t t18_comms_config_address;
     uint16_t t25_self_test_address;
     uint16_t t37_diagnostic_debug_address;
     uint16_t t42_proci_touchsupression_address;
@@ -33,10 +32,6 @@ struct mxt_data {
     uint16_t t25_self_test_report_id;
     uint16_t t100_first_report_id;
     uint16_t t100_size;
-
-    uint8_t t25_status;
-    uint8_t t25_size;
-    bool t25_report_received;
 
     int16_t prev_x[5];
     int16_t prev_y[5];
@@ -174,14 +169,6 @@ struct mxt_gen_acquisitionconfig_t8 {
     uint8_t cfg;
 } __packed;
 
-struct mxt_spt_commsconfig_t18 {
-    uint8_t ctrl;
-    uint8_t cmd;
-} __packed;
-
-#define MXT_T18_CTRL_MODE_MASK 0x01
-#define MXT_T18_CTRL_RETRIGEN  0x40
-
 struct mxt_spt_selftest_t25 {
     uint8_t ctrl;
     uint8_t cmd;
@@ -200,27 +187,6 @@ struct mxt_spt_selftest_t25 {
     uint8_t pertstcfg;
     uint8_t sesiglimits[3];
 } __packed;
-
-#define MXT_T25_CTRL_ENABLE         0x01
-#define MXT_T25_CTRL_RPTEN          0x02
-
-#define MXT_T25_TEST_FINISHED       0x00
-#define MXT_T25_TEST_POWER          0x01
-#define MXT_T25_TEST_PIN_FAULT      0x12
-#define MXT_T25_TEST_SIGNAL_LIMIT   0x17
-#define MXT_T25_TEST_ALL            0xFE
-
-#define MXT_T25_STATUS_POWER_FAULT  0x01
-#define MXT_T25_STATUS_PIN_FAULT    0x12
-#define MXT_T25_STATUS_SIGNAL_LIMIT 0x17
-#define MXT_T25_STATUS_INVALID      0xFD
-#define MXT_T25_STATUS_PASS         0xFE
-
-#define MXT_T25_SEQ_DRIVEN_GND      0x01
-#define MXT_T25_SEQ_DRIVEN_HIGH     0x02
-#define MXT_T25_SEQ_WALKING_1       0x03
-#define MXT_T25_SEQ_WALKING_0       0x04
-#define MXT_T25_SEQ_HIGH_VOLTAGE    0x07
 
 struct mxt_proci_touchsupression_t42 {
     uint8_t ctrl;
@@ -372,7 +338,7 @@ struct mxt_proci_retransmissioncompensation_t80 {
     uint8_t compstrthr;
     uint8_t compcfg;
     uint8_t moistvldthrsf;
-    uint8_t moistcfg3;q
+    uint8_t moistcfg3;
     unsigned char moistdegthr;
 } __packed;
 
