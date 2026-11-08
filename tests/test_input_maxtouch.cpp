@@ -173,9 +173,10 @@ TEST_F(MaxTouchTest, ReportDataReturnsZeroOnT44CountZero) {
     data.t5_message_processor_address = 0x0159;
     data.t5_max_message_size = 11;
 
-    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 1))
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 12))
         .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
             uint8_t *buf = static_cast<uint8_t*>(read_buf);
+            memset(buf, 0, 12);
             buf[0] = 0;
             return 0;
         }));
@@ -190,16 +191,17 @@ TEST_F(MaxTouchTest, ReportDataProcessesMessagesThroughT44AndT5) {
     data.t5_max_message_size = 11;
     data.t6_command_processor_report_id = 1;
 
-    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 1))
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 12))
         .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
             uint8_t *buf = static_cast<uint8_t*>(read_buf);
-            buf[0] = 2; // 2 messages queued
+            memset(buf, 0, 12);
+            buf[0] = 2; // count = 2
+            buf[1] = 1; // report_id = 1
             return 0;
         }));
 
     EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 11))
-        .Times(2)
-        .WillRepeatedly(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
             struct mxt_message *msg = static_cast<struct mxt_message*>(read_buf);
             memset(msg, 0, sizeof(*msg));
             msg->report_id = 1;

@@ -51,7 +51,7 @@ static void mxt_proc_message(const struct device *dev, const struct mxt_message 
 
     if (msg->report_id == data->t6_command_processor_report_id) {
         uint8_t status = msg->data[0];
-        LOG_DBG("T6 Status Report: 0x%02x%s%s%s%s%s%s%s",
+        LOG_INF("T6 Status Report: 0x%02x%s%s%s%s%s%s%s",
                 status,
                 status == 0 ? " OK" : "",
                 (status & MXT_T6_STATUS_RESET) ? " RESET" : "",
@@ -69,11 +69,12 @@ static void mxt_proc_message(const struct device *dev, const struct mxt_message 
 
         uint8_t status = msg->data[0];
         bool detect = (status & MXT_T100_DETECT) != 0;
+        uint8_t type = (status & MXT_T100_TYPE_MASK) >> 4;
         uint16_t x_pos = msg->data[1] | (msg->data[2] << 8);
         uint16_t y_pos = msg->data[3] | (msg->data[4] << 8);
 
-        LOG_DBG("T100 touch: finger=%d, detect=%d, X=%d, Y=%d (status=0x%02x)",
-                finger_idx, detect, x_pos, y_pos, status);
+        LOG_INF("T100 touch: finger=%d, detect=%d, type=%d, X=%d, Y=%d (status=0x%02x)",
+                finger_idx, detect, type, x_pos, y_pos, status);
 
         if (finger_idx < 5) {
             if (detect) {
@@ -81,6 +82,7 @@ static void mxt_proc_message(const struct device *dev, const struct mxt_message 
                     data->finger_active[finger_idx] = true;
                     data->prev_x[finger_idx] = x_pos;
                     data->prev_y[finger_idx] = y_pos;
+                    LOG_INF("Finger %d DOWN at (%d, %d)", finger_idx, x_pos, y_pos);
                 } else {
                     int16_t dx = (int16_t)x_pos - data->prev_x[finger_idx];
                     int16_t dy = (int16_t)y_pos - data->prev_y[finger_idx];
@@ -92,7 +94,10 @@ static void mxt_proc_message(const struct device *dev, const struct mxt_message 
                     }
                 }
             } else {
-                data->finger_active[finger_idx] = false;
+                if (data->finger_active[finger_idx]) {
+                    data->finger_active[finger_idx] = false;
+                    LOG_INF("Finger %d UP at (%d, %d)", finger_idx, x_pos, y_pos);
+                }
             }
         }
 
@@ -107,7 +112,8 @@ static void mxt_proc_message(const struct device *dev, const struct mxt_message 
         input_report_abs(dev, INPUT_ABS_Y, y_pos, false, K_FOREVER);
         input_report_key(dev, INPUT_BTN_TOUCH, *last_touch_status, false, K_FOREVER);
     } else {
-        LOG_DBG("Other report: rpt_id=%d", msg->report_id);
+        LOG_DBG("Other report: rpt_id=%d [0x%02x 0x%02x]",
+                msg->report_id, msg->data[0], msg->data[1]);
     }
 }
 
@@ -119,40 +125,45 @@ static int mxt_report_data(const struct device *dev) {
         return 0;
     }
 
-    uint8_t msg_count = 0;
-    ret = mxt_seq_read(dev, data->t44_message_count_address, &msg_count, 1);
-    if (ret < 0) {
-        LOG_ERR("Failed to read T44 message count: %d", ret);
-        return 0;
-    }
-
-    if (msg_count == 0) {
-        return 0;
-    }
-
     uint8_t read_len = (data->t5_max_message_size > 0 &&
                         data->t5_max_message_size <= sizeof(struct mxt_message))
                            ? data->t5_max_message_size
-                           : sizeof(struct mxt_message);
+                           : 11;
+
+    uint8_t buf[1 + sizeof(struct mxt_message)] = {0};
+    ret = mxt_seq_read(dev, data->t44_message_count_address, buf, 1 + read_len);
+    if (ret < 0) {
+        LOG_ERR("Failed to read T44: %d", ret);
+        return 0;
+    }
+
+    uint8_t count = buf[0];
+    struct mxt_message msg = {0};
+    memcpy(&msg, &buf[1], read_len);
+
+    if (count == 0 || msg.report_id == 0xFF || msg.report_id == 0x00) {
+        return 0;
+    }
 
     uint16_t pending_fingers = 0;
     bool last_touch_status = false;
     int messages_processed = 0;
 
-    for (int i = 0; i < msg_count; i++) {
-        struct mxt_message msg = {0};
+    mxt_proc_message(dev, &msg, &pending_fingers, &last_touch_status);
+    messages_processed++;
 
-        ret = mxt_seq_read(dev, data->t5_message_processor_address, &msg, read_len);
-        if (ret < 0) {
-            LOG_ERR("Failed to read T5 message: %d", ret);
+    uint8_t num_left = (count > 1) ? (count - 1) : 0;
+    if (num_left > 15) {
+        num_left = 15;
+    }
+
+    for (uint8_t m = 0; m < num_left; m++) {
+        struct mxt_message rem_msg = {0};
+        ret = mxt_seq_read(dev, data->t5_message_processor_address, &rem_msg, read_len);
+        if (ret < 0 || rem_msg.report_id == 0xFF || rem_msg.report_id == 0x00) {
             break;
         }
-
-        if (msg.report_id == 0xFF || msg.report_id == 0x00) {
-            break;
-        }
-
-        mxt_proc_message(dev, &msg, &pending_fingers, &last_touch_status);
+        mxt_proc_message(dev, &rem_msg, &pending_fingers, &last_touch_status);
         messages_processed++;
     }
 
@@ -167,7 +178,9 @@ static void mxt_work_cb(struct k_work *work) {
     struct mxt_data *data = CONTAINER_OF(work, struct mxt_data, work);
     const struct mxt_config *config = data->dev->config;
 
-    int retries = 10;
+    LOG_INF("mxt_work_cb triggered, CHG=%d", gpio_pin_get_dt(&config->chg));
+
+    int retries = 20;
     while (retries-- > 0) {
         if (mxt_report_data(data->dev) == 0) {
             break;
@@ -176,10 +189,21 @@ static void mxt_work_cb(struct k_work *work) {
             break;
         }
     }
+
+    if (gpio_pin_get_dt(&config->chg) == 1) {
+        k_work_submit(&data->work);
+    } else {
+        /* Re-enable level interrupt once CHG line is de-asserted (idle) */
+        gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
+    }
 }
 
 static void mxt_gpio_cb(const struct device *port, struct gpio_callback *cb, uint32_t pins) {
     struct mxt_data *data = CONTAINER_OF(cb, struct mxt_data, gpio_cb);
+    const struct mxt_config *config = data->dev->config;
+
+    /* Disable level interrupt while worker thread drains T5 messages */
+    gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
     k_work_submit(&data->work);
 }
 
@@ -357,7 +381,7 @@ static int mxt_load_config(const struct device *dev) {
             LOG_ERR("Failed to write T51+8 (0x%04x): %d", t51_unlock_addr, ret);
             return ret;
         }
-        LOG_DBG("Unlocked T44/T5 message reporting via T51+8 (0x%04x = 0x%02x)", t51_unlock_addr, unlock_val);
+        LOG_INF("Unlocked T44/T5 message reporting via T51+8 (0x%04x = 0x%02x)", t51_unlock_addr, unlock_val);
     }
 
     if (data->t100_multiple_touch_touchscreen_address) {
@@ -458,7 +482,8 @@ static int mxt_init(const struct device *dev) {
 
     k_work_init(&data->work, mxt_work_cb);
 
-    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_EDGE_TO_ACTIVE);
+    /* Hold CHG interrupt disabled until T51 unlock and calibration messages are drained */
+    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
     if (ret < 0) {
         LOG_ERR("Failed to configure interrupt for CHG pin %d", ret);
         return -EIO;
@@ -470,8 +495,30 @@ static int mxt_init(const struct device *dev) {
         return -EIO;
     }
 
-    // Drain any existing messages so CHG line is released for edge interrupts
-    mxt_report_data(dev);
+    /* Wait for T6 calibration to complete and drain initial T44/T5 messages so CHG returns to idle */
+    if (data->t6_command_processor_address) {
+        int cal_wait_ms = 300;
+        while (cal_wait_ms > 0) {
+            k_msleep(20);
+            cal_wait_ms -= 20;
+
+            int processed = mxt_report_data(dev);
+            if (gpio_pin_get_dt(&config->chg) == 0 && (processed > 0 || cal_wait_ms <= 160)) {
+                break;
+            }
+        }
+    }
+
+    ret = gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_LEVEL_ACTIVE);
+    if (ret < 0) {
+        LOG_ERR("Failed to enable level interrupt for CHG pin %d", ret);
+        return -EIO;
+    }
+
+    if (gpio_pin_get_dt(&config->chg) != 0) {
+        gpio_pin_interrupt_configure_dt(&config->chg, GPIO_INT_DISABLE);
+        k_work_submit(&data->work);
+    }
 
     return 0;
 }
@@ -493,7 +540,7 @@ static int mxt_init(const struct device *dev) {
         .invert_x = DT_INST_PROP(n, invert_x),                                                          \
         .invert_y = DT_INST_PROP(n, invert_y),                                                          \
         .sensor_width = DT_INST_PROP(n, sensor_width),                                                  \
-        .sensor_height = DT_INST_PROP(n, sensor_height),                                                \
+        .sensor_height = DT_INST_PROP_OR(n, sensor_height, 0),                                          \
         .touch_threshold = DT_INST_PROP_OR(n, touch_threshold, 18),                                     \
         .touch_hysteresis = DT_INST_PROP_OR(n, touch_hysteresis, 8),                                    \
         .internal_touch_threshold = DT_INST_PROP_OR(n, internal_touch_threshold, 10),                   \
