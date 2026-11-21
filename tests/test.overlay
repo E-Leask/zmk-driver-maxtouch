@@ -34,7 +34,7 @@
         chg-gpios = <&gpio0 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
         sensor-width = <156>;
         sensor-height = <91>;
-        swap-xy;
-        repeat-each-cycle;
+        swap-xy = <0>;
+        repeat-each-cycle = <1>;
     };
 };

@@ -290,11 +290,11 @@ The driver is instantiated for each enabled `microchip,maxtouch` node via `DT_IN
         sensor-height = <43>;
         max-touch-points = <5>;
 
-        /* Optional orientation flags (applied to T100 CFG1) */
-        swap-xy;
-        invert-x;
-        invert-y;
-        /* repeat-each-cycle; */
+        /* Optional orientation flags (applied to T100 CFG1: 1=enable, 0=disable, omit=NVRAM default) */
+        swap-xy = <1>;
+        invert-x = <1>;
+        invert-y = <0>;
+        /* repeat-each-cycle = <1>; */
 
         /* Optional T7 Power Config overrides */
         idle-acq-time-ms = <5>;

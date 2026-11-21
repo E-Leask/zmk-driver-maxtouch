@@ -20,20 +20,32 @@ properties:
     description: Maximum number of simultaneous touch points to track (up to 10)
 
   repeat-each-cycle:
-    type: boolean
-    description: Repeat events for any active touches each scan, even if no changes detected.
+    type: int
+    enum: [0, 1]
+    description: |
+      Repeat events for any active touches each scan, even if no changes detected.
+      Set to 1 to enable, 0 to disable. If omitted, keeps the controller's stored NVRAM default.
 
   swap-xy:
-    type: boolean
-    description: Swap X and Y coordinates
+    type: int
+    enum: [0, 1]
+    description: |
+      Swap X and Y coordinates.
+      Set to 1 to enable, 0 to disable. If omitted, keeps the controller's stored NVRAM default.
 
   invert-x:
-    type: boolean
-    description: Invert X coordinates
+    type: int
+    enum: [0, 1]
+    description: |
+      Invert X coordinates.
+      Set to 1 to enable, 0 to disable. If omitted, keeps the controller's stored NVRAM default.
 
   invert-y:
-    type: boolean
-    description: Invert Y coordinates
+    type: int
+    enum: [0, 1]
+    description: |
+      Invert Y coordinates.
+      Set to 1 to enable, 0 to disable. If omitted, keeps the controller's stored NVRAM default.
 
   idle-acq-time-ms:
     type: int

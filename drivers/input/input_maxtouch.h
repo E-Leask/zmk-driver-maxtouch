@@ -46,10 +46,10 @@ struct mxt_config {
     uint8_t active_to_idle_timeout;
     bool has_t7_config;
     uint8_t max_touch_points;
-    bool swap_xy;
-    bool invert_x;
-    bool invert_y;
-    bool repeat_each_cycle;
+    int8_t swap_xy;
+    int8_t invert_x;
+    int8_t invert_y;
+    int8_t repeat_each_cycle;
     uint16_t sensor_width;
     uint16_t sensor_height;
     uint8_t touch_threshold;

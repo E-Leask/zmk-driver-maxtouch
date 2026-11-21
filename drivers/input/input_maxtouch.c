@@ -416,21 +416,37 @@ static int mxt_load_config(const struct device *dev) {
             t100_modified = true;
         }
 
-        if (config->repeat_each_cycle && !(t100_conf.cfg1 & MXT_T100_CFG_RPTEACHCYCLE)) {
-            t100_conf.cfg1 |= MXT_T100_CFG_RPTEACHCYCLE;
-            t100_modified = true;
+        if (config->repeat_each_cycle >= 0) {
+            bool want = (config->repeat_each_cycle != 0);
+            bool have = (t100_conf.cfg1 & MXT_T100_CFG_RPTEACHCYCLE) != 0;
+            if (want != have) {
+                WRITE_BIT(t100_conf.cfg1, 0, want);
+                t100_modified = true;
+            }
         }
-        if (config->swap_xy && !(t100_conf.cfg1 & MXT_T100_CFG_SWITCHXY)) {
-            t100_conf.cfg1 |= MXT_T100_CFG_SWITCHXY;
-            t100_modified = true;
+        if (config->swap_xy >= 0) {
+            bool want = (config->swap_xy != 0);
+            bool have = (t100_conf.cfg1 & MXT_T100_CFG_SWITCHXY) != 0;
+            if (want != have) {
+                WRITE_BIT(t100_conf.cfg1, 5, want);
+                t100_modified = true;
+            }
         }
-        if (config->invert_x && !(t100_conf.cfg1 & MXT_T100_CFG_INVERTX)) {
-            t100_conf.cfg1 |= MXT_T100_CFG_INVERTX;
-            t100_modified = true;
+        if (config->invert_x >= 0) {
+            bool want = (config->invert_x != 0);
+            bool have = (t100_conf.cfg1 & MXT_T100_CFG_INVERTX) != 0;
+            if (want != have) {
+                WRITE_BIT(t100_conf.cfg1, 7, want);
+                t100_modified = true;
+            }
         }
-        if (config->invert_y && !(t100_conf.cfg1 & MXT_T100_CFG_INVERTY)) {
-            t100_conf.cfg1 |= MXT_T100_CFG_INVERTY;
-            t100_modified = true;
+        if (config->invert_y >= 0) {
+            bool want = (config->invert_y != 0);
+            bool have = (t100_conf.cfg1 & MXT_T100_CFG_INVERTY) != 0;
+            if (want != have) {
+                WRITE_BIT(t100_conf.cfg1, 6, want);
+                t100_modified = true;
+            }
         }
 
         if (t100_modified) {
@@ -535,10 +551,10 @@ static int mxt_init(const struct device *dev) {
         .has_t7_config = DT_INST_NODE_HAS_PROP(n, idle_acq_time_ms) ||                                  \
                          DT_INST_NODE_HAS_PROP(n, active_acq_time_ms) ||                                \
                          DT_INST_NODE_HAS_PROP(n, active_to_idle_timeout_ms),                           \
-        .repeat_each_cycle = DT_INST_PROP(n, repeat_each_cycle),                                        \
-        .swap_xy = DT_INST_PROP(n, swap_xy),                                                            \
-        .invert_x = DT_INST_PROP(n, invert_x),                                                          \
-        .invert_y = DT_INST_PROP(n, invert_y),                                                          \
+        .repeat_each_cycle = DT_INST_PROP_OR(n, repeat_each_cycle, -1),                                 \
+        .swap_xy = DT_INST_PROP_OR(n, swap_xy, -1),                                                     \
+        .invert_x = DT_INST_PROP_OR(n, invert_x, -1),                                                   \
+        .invert_y = DT_INST_PROP_OR(n, invert_y, -1),                                                   \
         .sensor_width = DT_INST_PROP(n, sensor_width),                                                  \
         .sensor_height = DT_INST_PROP_OR(n, sensor_height, 0),                                          \
         .touch_threshold = DT_INST_PROP_OR(n, touch_threshold, 18),                                     \

@@ -59,7 +59,13 @@ protected:
         g_i2c_mock = &mock_i2c;
 
         memset(&data, 0, sizeof(data));
+        memset(&config, 0, sizeof(config));
         memset(&dev, 0, sizeof(dev));
+
+        config.repeat_each_cycle = -1;
+        config.swap_xy = -1;
+        config.invert_x = -1;
+        config.invert_y = -1;
 
         dev.data = &data;
         dev.config = &config;
@@ -210,6 +216,59 @@ TEST_F(MaxTouchTest, ReportDataProcessesMessagesThroughT44AndT5) {
 
     int processed = mxt_report_data(&dev);
     EXPECT_EQ(processed, 2);
+}
+
+TEST_F(MaxTouchTest, T100ConfigTriStatePreservesEnablesAndDisablesBits) {
+    data.t100_multiple_touch_touchscreen_address = 0x06B4;
+    data.t100_size = 62;
+    config.max_touch_points = 5;
+
+    // Case 1: All -1 (omitted) -> preserves existing CFG1 bits from NVRAM
+    config.repeat_each_cycle = -1;
+    config.swap_xy = -1;
+    config.invert_x = -1;
+    config.invert_y = -1;
+
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 62))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            struct mxt_touch_multiscreen_t100 *t100 = static_cast<struct mxt_touch_multiscreen_t100*>(read_buf);
+            memset(t100, 0, sizeof(*t100));
+            t100->ctrl = MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_SCANEN;
+            t100->numtch = 5;
+            t100->tchaux = 0x01;
+            t100->cfg1 = MXT_T100_CFG_SWITCHXY | MXT_T100_CFG_INVERTX;
+            return 0;
+        }));
+
+    // Expect no write to T100 since nothing changed
+    EXPECT_EQ(mxt_load_config(&dev), 0);
+
+    // Case 2: Explicitly disable swap_xy (0) and enable invert_y (1), keep invert_x (-1)
+    config.swap_xy = 0;
+    config.invert_y = 1;
+
+    EXPECT_CALL(mock_i2c, write_read_dt(&config.bus, ::testing::_, ::testing::_, ::testing::_, 62))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void*, size_t, void *read_buf, size_t) {
+            struct mxt_touch_multiscreen_t100 *t100 = static_cast<struct mxt_touch_multiscreen_t100*>(read_buf);
+            memset(t100, 0, sizeof(*t100));
+            t100->ctrl = MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_SCANEN;
+            t100->numtch = 5;
+            t100->tchaux = 0x01;
+            t100->cfg1 = MXT_T100_CFG_SWITCHXY | MXT_T100_CFG_INVERTX;
+            return 0;
+        }));
+
+    EXPECT_CALL(mock_i2c, write_dt(&config.bus, ::testing::_, 64))
+        .WillOnce(::testing::Invoke([](const struct i2c_dt_spec*, const void *buf, size_t) {
+            const uint8_t *bytes = static_cast<const uint8_t*>(buf);
+            const struct mxt_touch_multiscreen_t100 *written =
+                reinterpret_cast<const struct mxt_touch_multiscreen_t100*>(&bytes[2]);
+            // SWITCHXY cleared, INVERTX preserved, INVERTY set
+            EXPECT_EQ(written->cfg1, MXT_T100_CFG_INVERTX | MXT_T100_CFG_INVERTY);
+            return 0;
+        }));
+
+    EXPECT_EQ(mxt_load_config(&dev), 0);
 }
 
 #if !defined(__ZEPHYR__)
