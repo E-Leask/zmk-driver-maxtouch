@@ -125,10 +125,14 @@ static int mxt_report_data(const struct device *dev) {
         return 0;
     }
 
-    uint8_t read_len = (data->t5_max_message_size > 0 &&
-                        data->t5_max_message_size <= sizeof(struct mxt_message))
-                           ? data->t5_max_message_size
-                           : 11;
+    /* T5 object size in the Object Table includes the 1-byte checksum.
+     * In non-checksum mode (MSB of address = 0), the chip wraps its internal
+     * read pointer to the next FIFO message before the checksum byte (at size - 1).
+     */
+    uint8_t read_len = (data->t5_max_message_size > 1 &&
+                        data->t5_max_message_size - 1 <= sizeof(struct mxt_message))
+                           ? (data->t5_max_message_size - 1)
+                           : 10;
 
     uint8_t buf[1 + sizeof(struct mxt_message)] = {0};
     ret = mxt_seq_read(dev, data->t44_message_count_address, buf, 1 + read_len);
@@ -140,6 +144,8 @@ static int mxt_report_data(const struct device *dev) {
     uint8_t count = buf[0];
     struct mxt_message msg = {0};
     memcpy(&msg, &buf[1], read_len);
+
+    LOG_DBG("T44 count=%d, first rpt_id=%d", count, msg.report_id);
 
     if (count == 0 || msg.report_id == 0xFF || msg.report_id == 0x00) {
         return 0;
@@ -178,7 +184,7 @@ static void mxt_work_cb(struct k_work *work) {
     struct mxt_data *data = CONTAINER_OF(work, struct mxt_data, work);
     const struct mxt_config *config = data->dev->config;
 
-    LOG_INF("mxt_work_cb triggered, CHG=%d", gpio_pin_get_dt(&config->chg));
+    LOG_DBG("mxt_work_cb triggered, CHG=%d", gpio_pin_get_dt(&config->chg));
 
     int retries = 20;
     while (retries-- > 0) {
@@ -372,10 +378,12 @@ static int mxt_load_config(const struct device *dev) {
     }
 #endif
 
-    // Unlock T44/T5 FIFO readout if T51 is present (e.g., mXT144U at 0x04F9 + offset 8 = 0x0501)
+    // Unlock T44/T5 FIFO readout if T51 is present (e.g., mXT144U at 0x04F9 + offset 8 = 0x0501).
+    // Bit 7 (0x80) enables standard T44/T5 FIFO reporting while clearing Bit 3 (0x08) so CHG only
+    // asserts when T5 messages are queued rather than on every 16 ms scan cycle.
     if (data->t51_custom_address) {
         uint16_t t51_unlock_addr = data->t51_custom_address + 8;
-        uint8_t unlock_val = 0xFF;
+        uint8_t unlock_val = 0x80;
         ret = mxt_seq_write(dev, t51_unlock_addr, &unlock_val, 1);
         if (ret < 0) {
             LOG_ERR("Failed to write T51+8 (0x%04x): %d", t51_unlock_addr, ret);
@@ -396,12 +404,29 @@ static int mxt_load_config(const struct device *dev) {
             return ret;
         }
 
+        LOG_INF("Initial T100: ctrl=0x%02x cfg1=0x%02x tcheventcfg=0x%02x numtch=%d tchthr=%d movhysti=%d movhystn=%d",
+                t100_conf.ctrl, t100_conf.cfg1, t100_conf.tcheventcfg, t100_conf.numtch,
+                t100_conf.tchthr, sys_le16_to_cpu(t100_conf.movhysti), sys_le16_to_cpu(t100_conf.movhystn));
+
         bool t100_modified = false;
 
         // Ensure touch scanning, report generation, and object enable are active
         uint8_t req_ctrl = MXT_T100_CTRL_ENABLE | MXT_T100_CTRL_RPTEN | MXT_T100_CTRL_SCANEN;
         if ((t100_conf.ctrl & req_ctrl) != req_ctrl) {
             t100_conf.ctrl |= req_ctrl;
+            t100_modified = true;
+        }
+
+        // TCHEVENTCFG bits are disable flags (DISMOVE, DISSUP, DISUNSUP, DISUP, DISDOWN);
+        // ensure all touch events (especially MOVE) are enabled (0x00).
+        if (t100_conf.tcheventcfg != 0x00) {
+            t100_conf.tcheventcfg = 0x00;
+            t100_modified = true;
+        }
+
+        // Disable coordinate position locking inside clipping boundaries (DISLOCK = Bit 4)
+        if ((t100_conf.cfg1 & MXT_T100_CFG_DISLOCK) == 0) {
+            t100_conf.cfg1 |= MXT_T100_CFG_DISLOCK;
             t100_modified = true;
         }
 
